@@ -1,0 +1,74 @@
+# Builds the macOS (Apple Silicon + Intel) and Windows 11 installers and publishes
+# them — plus the auto-updater manifest (latest.json) — to a GitHub Release.
+# Run it from the Actions tab ("Run workflow") or by pushing a tag like v0.2.0.
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Check secrets are set
+        shell: bash
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          missing=""
+          [ -z "$GOOGLE_CLIENT_ID" ] && missing="$missing GOOGLE_CLIENT_ID"
+          [ -z "$GOOGLE_CLIENT_SECRET" ] && missing="$missing GOOGLE_CLIENT_SECRET"
+          [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] && missing="$missing TAURI_SIGNING_PRIVATE_KEY"
+          if [ -n "$missing" ]; then echo "::error::Missing repository secrets:$missing (Settings → Secrets and variables → Actions)"; exit 1; fi
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Health Tracker v__VERSION__
+          releaseBody: |
+            Mac (Apple Silicon): Health.Tracker_*_aarch64.dmg · Mac (Intel): Health.Tracker_*_x64.dmg · Windows 11: Health.Tracker_*_x64_en-US.msi (or the -setup.exe).
+            Already installed? The app updates itself — you'll see an "Install & restart" banner.
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
