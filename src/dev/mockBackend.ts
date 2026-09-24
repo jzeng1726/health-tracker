@@ -5,9 +5,12 @@
  */
 import type { Backend } from '../sync/backend';
 import type { SheetCell } from '../core/time';
-import fallCut from '../../fixtures/fall-cut-2026.json';
-import week01 from '../../fixtures/fb-week-01.json';
-import weeks24 from '../../fixtures/fb-weeks-2-4.json';
+// Fixtures hold real sheet data and are git-ignored; glob tolerates them being absent (CI, fresh clones).
+const FIX = import.meta.glob('../../fixtures/*.json', { eager: true, import: 'default' }) as Record<string, any>;
+const fx = (name: string) => FIX[`../../fixtures/${name}`];
+const fallCut = fx('fall-cut-2026.json');
+const week01 = fx('fb-week-01.json');
+const weeks24 = fx('fb-weeks-2-4.json');
 
 interface MockTab { title: string; sheetId: number; hidden?: boolean; rows: SheetCell[][] }
 interface MockFile { id: string; name: string; modifiedTime: string; owner: string; shortcut?: string; tabs: MockTab[] }
@@ -16,9 +19,9 @@ const FOLDER = 'mock-folder';
 const files = new Map<string, MockFile>();
 const add = (j: any, modifiedTime: string, owner: string, shortcut?: string) =>
   files.set(j.id, { id: j.id, name: j.title, modifiedTime, owner, shortcut, tabs: [{ title: j.tab, sheetId: 0, rows: structuredClone(j.rows) }] });
-add(fallCut, '2026-09-24T14:25:57.070Z', 'you@example.com');
-add(week01, '2026-08-27T21:53:07.194Z', 'coach@example.com', 'sc-1');
-add(weeks24, '2026-09-24T01:17:02.233Z', 'coach@example.com', 'sc-2');
+if (fallCut) add(fallCut, '2026-09-24T14:25:57.070Z', 'you@example.com');
+if (week01) add(week01, '2026-08-27T21:53:07.194Z', 'coach@example.com', 'sc-1');
+if (weeks24) add(weeks24, '2026-09-24T01:17:02.233Z', 'coach@example.com', 'sc-2');
 
 const cache = new Map<string, string>();
 let seq = 1;
