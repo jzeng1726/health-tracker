@@ -331,6 +331,10 @@ export async function logWorkout(entry: WorkoutEntry, fileId?: string): Promise<
   return { where: `${file?.name ?? 'Training Log'} › ${tabTitle}` };
 }
 
+export async function credentialsInfo() { return (await getBackend()).credentialsInfo(); }
+export async function saveClientCredentials(json: string) { return (await getBackend()).setClientCredentials(json); }
+export async function clearClientCredentials() { return (await getBackend()).clearClientCredentials(); }
+
 export async function installUpdate() {
   if (state.update?.install) await state.update.install();
 }

@@ -65,6 +65,9 @@ export function mockBackend(): Backend {
     deviceName: async () => 'Browser preview',
     appVersion: async () => '0.1.0-dev',
     checkUpdate: async () => ({ available: false }),
+    credentialsInfo: async () => ({ source: 'mock', client_id_end: 'mock', secret: 'n/a' }),
+    setClientCredentials: async () => ({ source: 'saved in this app', client_id_end: 'mock', secret: 'n/a' }),
+    clearClientCredentials: async () => ({ source: 'mock', client_id_end: 'mock', secret: 'n/a' }),
     request: (async (method: string, url: string, body: any): Promise<any> => {
       await new Promise(r => setTimeout(r, 60));
       const u = new URL(url);

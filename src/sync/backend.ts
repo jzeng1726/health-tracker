@@ -7,6 +7,8 @@ export class ApiError extends Error {
   constructor(public code: ApiErrorCode, message: string, public status?: number) { super(message); }
 }
 
+export interface CredentialsInfo { source?: string | null; client_id_end?: string | null; secret?: string | null }
+
 export interface UpdateInfo { available: boolean; version?: string; notes?: string; install?: () => Promise<void> }
 
 export interface Backend {
@@ -21,6 +23,9 @@ export interface Backend {
   deviceName(): Promise<string>;
   appVersion(): Promise<string>;
   checkUpdate(): Promise<UpdateInfo>;
+  credentialsInfo(): Promise<CredentialsInfo>;
+  setClientCredentials(json: string): Promise<CredentialsInfo>;
+  clearClientCredentials(): Promise<CredentialsInfo>;
 }
 
 export const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -50,6 +55,9 @@ export async function tauriBackend(): Promise<Backend> {
     cachePut: (key, value) => call('cache_put', { key, value }),
     cacheClear: () => call('cache_clear'),
     deviceName: () => call('device_name'),
+    credentialsInfo: () => call('credentials_info'),
+    setClientCredentials: json => call('set_client_credentials', { json }),
+    clearClientCredentials: () => call('clear_client_credentials'),
     appVersion: async () => (await import('@tauri-apps/api/app')).getVersion(),
     checkUpdate: async () => {
       try {

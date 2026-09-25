@@ -8,6 +8,7 @@ import Endurance from './pages/Endurance';
 import QuickEntry from './pages/QuickEntry';
 import Review from './pages/Review';
 import Settings from './pages/Settings';
+import { CredentialsPanel } from './ui/Credentials';
 
 export type Page = 'dashboard' | 'bodyweight' | 'strength' | 'endurance' | 'quick' | 'review' | 'settings';
 const PAGES: { id: Page; label: string }[] = [
@@ -184,6 +185,7 @@ function Setup() {
         <button className="btn primary" onClick={go} disabled={busy}>{busy ? <><span className="spin" /> Waiting for the browser…</> : 'Connect Google'}</button>
         {err && <p className="hint bad" role="alert">{err}</p>}
         {s.error && <p className="hint bad">{s.error.message}</p>}
+        <CredentialsPanel startOpen={!!err && /client secret|credentials/i.test(err)} />
       </div>
     </div>
   );

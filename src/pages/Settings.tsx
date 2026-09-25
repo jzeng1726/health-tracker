@@ -3,6 +3,7 @@ import type { Page } from '../App';
 import { useSync, Section, useToast } from '../ui/common';
 import { setConfigKey, connect, disconnect, clearCache, sync, checkForUpdate, installUpdate, bodyweightTargets, workoutTargets } from '../sync/engine';
 import type { Settings as S } from '../core/config';
+import { CredentialsPanel } from '../ui/Credentials';
 
 export default function Settings({ theme, setTheme, go }: { theme: string; setTheme: (t: 'system' | 'light' | 'dark') => void; go: (p: Page) => void }) {
   const s = useSync();
@@ -22,6 +23,7 @@ export default function Settings({ theme, setTheme, go }: { theme: string; setTh
           <div className="hint">Token stored in the {navigator.platform.toLowerCase().includes('win') ? 'Windows Credential Manager' : 'macOS Keychain'}. Testing-mode sign-ins expire about weekly; reconnecting takes one click.</div></span>
         <button className="btn primary" onClick={() => connect().catch(() => {})}>Reconnect Google</button>
         {s.auth === 'connected' && <button className="btn" onClick={() => disconnect()}>Disconnect</button>}
+        <div style={{ flexBasis: '100%' }}><CredentialsPanel /></div>
       </div>
 
       <Section title="Sync" />

@@ -1,6 +1,6 @@
 {
   "name": "health-tracker",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Personal strength, endurance and bodyweight tracker (Google Sheets)",
   "scripts": {
     "test": "vitest run",

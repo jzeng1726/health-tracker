@@ -26,6 +26,8 @@ const SCOPES: &str = "https://www.googleapis.com/auth/drive.readonly https://www
 const KEYRING_SERVICE: &str = "com.jeffreyzeng.healthtracker";
 const KEY_REFRESH: &str = "google-refresh-token";
 const KEY_EMAIL: &str = "google-account-email";
+const KEY_CLIENT_ID: &str = "google-oauth-client-id";
+const KEY_CLIENT_SECRET: &str = "google-oauth-client-secret";
 const ALLOWED_HOSTS: [&str; 2] = ["https://www.googleapis.com/", "https://sheets.googleapis.com/"];
 
 struct AccessToken {
@@ -39,13 +41,33 @@ pub struct AppState {
     db: Mutex<rusqlite::Connection>,
 }
 
-fn client_credentials() -> Result<(String, String), String> {
-    let id = option_env!("GOOGLE_CLIENT_ID").map(String::from).or_else(|| std::env::var("GOOGLE_CLIENT_ID").ok());
-    let secret = option_env!("GOOGLE_CLIENT_SECRET").map(String::from).or_else(|| std::env::var("GOOGLE_CLIENT_SECRET").ok());
-    match (id, secret) {
-        (Some(i), Some(s)) if !i.is_empty() && !s.is_empty() => Ok((i, s)),
-        _ => Err("CONFIG: This build has no Google OAuth client ID. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the GitHub repository secrets and rebuild.".into()),
+/// Where the OAuth client credentials come from, in priority order:
+/// 1. pasted by the user in the app (stored in the OS keychain),
+/// 2. baked in at build time (GitHub Actions secrets),
+/// 3. runtime env vars (local development).
+fn client_credentials() -> Result<(String, String, &'static str), String> {
+    if let (Some(i), Some(s)) = (read_secret(KEY_CLIENT_ID), read_secret(KEY_CLIENT_SECRET)) {
+        let (i, s) = (i.trim().to_string(), s.trim().to_string());
+        if !i.is_empty() && !s.is_empty() {
+            return Ok((i, s, "saved in this app"));
+        }
     }
+    let (i, s) = (env!("HT_GOOGLE_CLIENT_ID").trim(), env!("HT_GOOGLE_CLIENT_SECRET").trim());
+    if !i.is_empty() && !s.is_empty() {
+        return Ok((i.to_string(), s.to_string(), "built into this version"));
+    }
+    if let (Ok(i), Ok(s)) = (std::env::var("GOOGLE_CLIENT_ID"), std::env::var("GOOGLE_CLIENT_SECRET")) {
+        if !i.trim().is_empty() && !s.trim().is_empty() {
+            return Ok((i.trim().to_string(), s.trim().to_string(), "environment"));
+        }
+    }
+    Err("CONFIG: No Google OAuth credentials yet. Paste your Google OAuth JSON under \"Use my Google credentials file\".".into())
+}
+
+/// Safe-to-show fingerprint: length and last 4 characters only.
+fn fingerprint(s: &str) -> String {
+    let tail: String = s.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{} characters, ending \u{2026}{}", s.chars().count(), tail)
 }
 
 fn keyring_entry(name: &str) -> Result<keyring::Entry, String> {
@@ -98,7 +120,7 @@ async fn auth_disconnect(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn auth_connect(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<AuthStatus, String> {
-    let (client_id, client_secret) = client_credentials()?;
+    let (client_id, client_secret, cred_source) = client_credentials()?;
     let verifier = random_string(64);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let csrf = random_string(24);
@@ -168,6 +190,12 @@ async fn auth_connect(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
         .map_err(net_err)?;
     if !resp.status().is_success() {
         let t = resp.text().await.unwrap_or_default();
+        if t.contains("invalid_client") {
+            return Err(format!(
+                "AUTH_REQUIRED: Google rejected the client secret ({cred_source}: {}). Paste your Google OAuth JSON under \"Use my Google credentials file\" and try again.",
+                fingerprint(&client_secret)
+            ));
+        }
         return Err(format!("AUTH_REQUIRED: token exchange failed: {t}"));
     }
     let tok: TokenResponse = resp.json().await.map_err(|e| format!("UNKNOWN: {e}"))?;
@@ -204,7 +232,7 @@ async fn access_token(state: &AppState, force: bool) -> Result<String, String> {
         }
     }
     let refresh = read_secret(KEY_REFRESH).ok_or("AUTH_REQUIRED: not connected to Google")?;
-    let (client_id, client_secret) = client_credentials()?;
+    let (client_id, client_secret, _) = client_credentials()?;
     let resp = state
         .http
         .post(TOKEN_URL)
@@ -226,6 +254,49 @@ async fn access_token(state: &AppState, force: bool) -> Result<String, String> {
     let token = tok.access_token.clone();
     *guard = Some(AccessToken { token: tok.access_token, expires_at: Instant::now() + Duration::from_secs(tok.expires_in.unwrap_or(3600)) });
     Ok(token)
+}
+
+#[derive(Serialize)]
+pub struct CredentialsInfo {
+    source: Option<String>,
+    client_id_end: Option<String>,
+    secret: Option<String>,
+}
+
+#[tauri::command]
+fn credentials_info() -> CredentialsInfo {
+    match client_credentials() {
+        Ok((id, secret, source)) => CredentialsInfo {
+            source: Some(source.into()),
+            client_id_end: Some(id.split('-').next().unwrap_or("").chars().take(12).collect()),
+            secret: Some(fingerprint(&secret)),
+        },
+        Err(_) => CredentialsInfo { source: None, client_id_end: None, secret: None },
+    }
+}
+
+/// Accepts the whole downloaded OAuth JSON file ({"installed":{...}}) or just its inner object.
+#[tauri::command]
+async fn set_client_credentials(state: State<'_, AppState>, json: String) -> Result<CredentialsInfo, String> {
+    let v: serde_json::Value = serde_json::from_str(json.trim())
+        .map_err(|_| "CONFIG: That doesn't look like the Google JSON file — paste its entire contents, starting with {".to_string())?;
+    let inner = v.get("installed").or_else(|| v.get("web")).unwrap_or(&v);
+    let id = inner["client_id"].as_str().unwrap_or("").trim().to_string();
+    let secret = inner["client_secret"].as_str().unwrap_or("").trim().to_string();
+    if !id.ends_with(".apps.googleusercontent.com") || secret.is_empty() {
+        return Err("CONFIG: The JSON needs both client_id (ending in .apps.googleusercontent.com) and client_secret.".into());
+    }
+    keyring_entry(KEY_CLIENT_ID)?.set_password(&id).map_err(|e| format!("UNKNOWN: {e}"))?;
+    keyring_entry(KEY_CLIENT_SECRET)?.set_password(&secret).map_err(|e| format!("UNKNOWN: {e}"))?;
+    *state.token.lock().await = None;
+    Ok(credentials_info())
+}
+
+#[tauri::command]
+fn clear_client_credentials() -> CredentialsInfo {
+    if let Ok(e) = keyring_entry(KEY_CLIENT_ID) { let _ = e.delete_credential(); }
+    if let Ok(e) = keyring_entry(KEY_CLIENT_SECRET) { let _ = e.delete_credential(); }
+    credentials_info()
 }
 
 // ------------------------------------------------------------------ Google API proxy
@@ -334,7 +405,10 @@ pub fn run() {
             cache_get,
             cache_put,
             cache_clear,
-            device_name
+            device_name,
+            credentials_info,
+            set_client_credentials,
+            clear_client_credentials
         ])
         .run(tauri::generate_context!())
         .expect("error while running Health Tracker");
