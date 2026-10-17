@@ -25,6 +25,9 @@
   --accent-2: #6da7ec;
   --band-fill: rgba(42, 120, 214, 0.09);
   --band-edge: #86b6ef;
+  --note: #7a5bd1;
+  --life: rgba(214, 160, 42, 0.12);
+  --life-edge: #c9952a;
   /* sidebar: deep navy in both themes */
   --nav-bg: linear-gradient(180deg, #102039 0%, #142a4b 100%);
   --nav-ink: #c6d3e6;
@@ -65,6 +68,9 @@
     --accent-2: #86b6ef;
     --band-fill: rgba(57, 135, 229, 0.12);
     --band-edge: #5598e7;
+    --note: #a78bfa;
+    --life: rgba(232, 180, 70, 0.13);
+    --life-edge: #d9a640;
     --nav-bg: linear-gradient(180deg, #070d1a 0%, #0c1830 100%);
     --hero: linear-gradient(135deg, #1c5cab 0%, #3987e5 100%);
     --seq-0: #162138;
@@ -95,6 +101,9 @@
   --accent-2: #86b6ef;
   --band-fill: rgba(57, 135, 229, 0.12);
   --band-edge: #5598e7;
+  --note: #a78bfa;
+  --life: rgba(232, 180, 70, 0.13);
+  --life-edge: #d9a640;
   --nav-bg: linear-gradient(180deg, #070d1a 0%, #0c1830 100%);
   --hero: linear-gradient(135deg, #1c5cab 0%, #3987e5 100%);
   --seq-0: #162138;
@@ -302,7 +311,70 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
 .heat-legend .ramp span { width: 10px; height: 12px; display: inline-block; border-radius: 2px; }
 .heat-legend .ramp .s1 { background: var(--seq-1); } .heat-legend .ramp .s3 { background: var(--seq-3); } .heat-legend .ramp .s5 { background: var(--seq-5); }
 
+/* ---- notes */
+.pill.note { background: color-mix(in srgb, var(--note) 16%, var(--surface)); color: var(--ink); }
+.notes-list { margin: 8px 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.notes-list h3 { margin-bottom: 6px; }
+.note-row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 3px 0; font-size: 13px; }
+.chip.small { padding: 2px 9px; font-size: 12px; }
+.chip .x { border: 0; background: transparent; cursor: pointer; color: var(--muted); padding: 0 0 0 4px; font-size: 14px; line-height: 1; }
+.notebox { display: grid; gap: 6px; }
+.notebox textarea { background: var(--surface); border: 1px solid var(--axis); border-radius: 8px; padding: 7px 9px; font: inherit; color: inherit; resize: vertical; width: 100%; }
+
+/* ---- log & calendar */
+.log-top { grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); align-items: start; }
+.cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cal-head h2 { margin: 0; min-width: 150px; text-align: center; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-dow { font-size: 11px; color: var(--muted); text-align: center; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 2px; }
+.cal-day { position: relative; min-height: 64px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 4px 5px; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px; font: inherit; color: inherit; overflow: hidden; }
+.cal-day:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.cal-day .n { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cal-day.out { opacity: 0.45; }
+.cal-day.trained { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.cal-day.today { box-shadow: inset 0 0 0 2px var(--accent); }
+.cal-day.sel { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+.cal-life { font-size: 10.5px; line-height: 1.2; background: var(--life); border-left: 2px solid var(--life-edge); padding: 1px 4px; border-radius: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+.cal-marks { margin-top: auto; display: flex; gap: 6px; font-size: 11.5px; }
+.m-pr { color: var(--accent); font-weight: 700; }
+.m-note { color: var(--note); font-weight: 700; }
+.cal-legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+.cal-legend .k { display: inline-flex; gap: 5px; align-items: center; }
+.cal-legend .sw { width: 14px; height: 12px; border-radius: 3px; border: 1px solid var(--border); }
+.cal-legend .sw.trained { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.cal-legend .sw.life { background: var(--life); border-left: 2px solid var(--life-edge); }
+.timeline { padding: 6px 16px; }
+.tl-day { display: grid; grid-template-columns: 120px 1fr; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--grid); }
+.tl-day:last-child { border-bottom: 0; }
+.tl-date { display: grid; gap: 1px; align-content: start; }
+.tl-items { display: grid; gap: 8px; }
+.tl-item { display: grid; grid-template-columns: 74px 1fr; gap: 10px; align-items: start; }
+.tl-kind { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 8px; border-radius: 6px; justify-self: start; white-space: nowrap; }
+.tl-kind.k-life { background: var(--life); color: var(--ink-2); border-left: 3px solid var(--life-edge); }
+.tl-kind.k-note { background: color-mix(in srgb, var(--note) 14%, var(--surface)); color: var(--ink-2); }
+.tl-kind.k-pr { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--ink-2); }
+.tl-body { display: grid; gap: 3px; justify-items: start; font-size: 13px; }
+.tl-text { font-size: 13.5px; color: var(--ink); background: var(--surface-2); padding: 4px 8px; border-radius: 6px; }
+
+/* ---- review: exercises by muscle */
+.muscle-groups { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); align-items: start; }
+.mg-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; padding-bottom: 6px; border-bottom: 2px solid color-mix(in srgb, var(--accent) 30%, var(--grid)); }
+.mg-head h2 { margin: 0; }
+.mg-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--grid); }
+.mg-row:last-child { border-bottom: 0; }
+.mg-row.editing { display: block; background: var(--surface-2); margin: 0 -8px; padding: 8px; border-radius: 8px; }
+.mg-name { font-weight: 550; display: inline-flex; gap: 6px; align-items: center; flex: 1; min-width: 0; flex-wrap: wrap; line-height: 1.3; }
+.mg-meta { display: inline-flex; gap: 8px; align-items: center; white-space: nowrap; flex: none; }
+details.merged { margin-top: 14px; }
+details.merged summary { cursor: pointer; }
+details.merged table { margin-top: 8px; }
+
+.gym-cards .tile-label .hint { font-size: 11.5px; }
+.card.tile.accent .hint { color: rgba(255, 255, 255, 0.8); }
+
 @media (max-width: 900px) {
+  .log-top { grid-template-columns: 1fr; }
+  .tl-day, .tl-item { grid-template-columns: 1fr; }
   .prep-card { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 760px) {
@@ -313,3 +385,4 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accen
   .two { grid-template-columns: 1fr; }
 }
 .form label.toggle { display: inline-flex; color: var(--ink-2); font-size: 13px; }
+.mg-sec { flex-basis: 100%; font-weight: 400; }

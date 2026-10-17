@@ -67,7 +67,7 @@ const round = (w: number) => Math.round(w / 2.5) * 2.5;
 export function prepRows(items: ProgramItem[], ds: Dataset, gym: string, opts: { today: string; factorOverrides?: Record<string, number | null>; defaultGym?: string; perHand: boolean }): PrepRow[] {
   const byEx = sessionsByExercise(ds.sets);
   const factors = gymFactors(byEx, opts.factorOverrides, opts.defaultGym);
-  const plateaus = findPlateaus(byEx, opts.today);
+  const plateaus = findPlateaus(byEx, opts.today, 3, ds.changes);
   const endS = enduranceSessions(ds.endurance, opts.perHand);
   return items.map(item => {
     const info = ds.exercises[item.exercise];

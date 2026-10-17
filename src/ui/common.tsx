@@ -130,7 +130,7 @@ export const dayTick = (d: number) => shortDate(fromDay(d));
  * One-series time chart (x = day number). Crosshair tooltip; values formatted by caller.
  * Never used with two y-scales.
  */
-export function TimeChart({ data, yFmt, tipLabel, height = 220, refLine, zeroLine, lowerIsBetter, area, tipExtra, yDomain, dots = true, compact, hollowKey }: {
+export function TimeChart({ data, yFmt, tipLabel, height = 220, refLine, zeroLine, lowerIsBetter, area, tipExtra, yDomain, dots = true, compact, hollowKey, xMarks }: {
   data: { day: number; y: number; [k: string]: any }[];
   yFmt: (v: number) => string;
   tipLabel: string;
@@ -145,6 +145,8 @@ export function TimeChart({ data, yFmt, tipLabel, height = 220, refLine, zeroLin
   compact?: boolean;
   /** points where p[hollowKey] is truthy get an open marker (e.g. converted from another gym) */
   hollowKey?: string;
+  /** vertical markers (e.g. setup changes), x = day number */
+  xMarks?: { day: number; label: string }[];
 }) {
   if (!data.length) return <div className="hint" style={{ height, display: 'grid', placeItems: 'center' }}>No data in this date range</div>;
   const single = data.length === 1;
@@ -161,6 +163,7 @@ export function TimeChart({ data, yFmt, tipLabel, height = 220, refLine, zeroLin
           <XAxis dataKey="day" type="number" domain={single ? [data[0].day - 3, data[0].day + 3] : ['dataMin', 'dataMax']} tickFormatter={dayTick} {...axisProps} minTickGap={24} />
           <YAxis {...axisProps} axisLine={false} width={compact ? 40 : 52} tickFormatter={yFmt} domain={domain} reversed={!!lowerIsBetter} tickCount={compact ? 3 : 5} />
           {zeroLine && <ReferenceLine y={0} stroke="var(--axis)" />}
+          {xMarks?.map((m, i) => <ReferenceLine key={i} x={m.day} stroke="var(--note)" strokeDasharray="3 3" label={{ value: m.label, position: 'insideTopLeft', fill: 'var(--ink-2)', fontSize: 10 }} />)}
           {refLine && <ReferenceLine y={refLine.y} stroke="var(--muted)" label={{ value: refLine.label, position: 'insideTopRight', fill: 'var(--ink-2)', fontSize: 11 }} />}
           <Tooltip cursor={{ stroke: 'var(--axis)', strokeWidth: 1 }} isAnimationActive={false}
             content={({ active, payload }) => {
@@ -192,7 +195,9 @@ export function useCurrentGym(): [string, (g: string) => void] {
   const s = useSync();
   const lastUsed = useMemo(() => [...s.dataset.sets].sort((a, b) => a.date.localeCompare(b.date)).at(-1)?.gym, [s.dataset.sets]);
   const [g, setG] = useState<string>(() => { try { return localStorage.getItem('gym.current') ?? ''; } catch { return ''; } });
-  const value = g || lastUsed || s.dataset.gyms[0] || 'Home gym';
+  // a gym remembered under its old name ("Home gym") follows the rename
+  const remembered = g && (s.config.gyms.aliases?.[g.toLowerCase()] ?? (g.toLowerCase() === 'home gym' ? s.config.gyms.defaultGym : g));
+  const value = remembered || lastUsed || s.dataset.gyms[0] || 'Training Station';
   return [value, (v: string) => { setG(v); try { localStorage.setItem('gym.current', v); } catch { /* per-viewer convenience */ } }];
 }
 

@@ -3,6 +3,8 @@ import { useSync, todayISO, useToast, GymSelect, useCurrentGym, takePrefill } fr
 import { logBodyweight, logWorkout, bodyweightTargets, workoutTargets } from '../sync/engine';
 import { parseDuration, parseDistance, formatDuration } from '../core/time';
 import { detectMuscles, normalizeExerciseName } from '../core/muscles';
+import { readNote, SETUP_TAGS, TAG_LABEL } from '../core/notes';
+import { cleanExerciseName } from '../core/names';
 
 export default function QuickEntry() {
   const s = useSync();
@@ -14,15 +16,6 @@ export default function QuickEntry() {
         <BodyweightForm disabled={offline} />
         <WorkoutForm mode="strength" disabled={offline} />
         <WorkoutForm mode="endurance" disabled={offline} />
-        <div className="card">
-          <h2>Where entries go</h2>
-          <ul className="steps">
-            <li><b>Morning weight</b> fills that date's row in your bodyweight sheet (or adds a row if the date isn't there yet).</li>
-            <li><b>Strength and endurance</b> entries are added to your <b>Training Log</b> sheet in the Health Tracker folder. The app creates it the first time. Your coach's sheets are never edited.</li>
-            <li><b>Times:</b> <code>1:30</code> = 1 min 30 s · <code>0:45</code> = 45 s · <code>1:05:20</code> = 1 h 5 min 20 s · <code>90s</code>, <code>2m30s</code>, <code>2 min</code> and <code>1h 5m</code> all work. Times are saved as text so Sheets can't turn them into clock times.</li>
-            <li>Both computers see the entry after their next refresh (on focus, every {s.config.settings.refreshMinutes} min, or the Refresh button).</li>
-          </ul>
-        </div>
       </div>
     </>
   );
@@ -116,7 +109,7 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
         timeText: t && !t.ambiguous ? formatDuration(t.seconds) : '', distanceText: dd && !dd.ambiguous ? `${dd.value} ${dd.unit}` : '', notes,
         gym, rpe: rpe === '' ? null : Number(rpe),
       }, target || undefined);
-      toast(`Logged ${ex.trim()}${t?.seconds != null ? ` · ${formatDuration(t.seconds)}` : ''} → ${r.where}`);
+      toast(`Logged ${r.name}${t?.seconds != null ? ` · ${formatDuration(t.seconds)}` : ''} → ${r.where}`);
       setWeight(''); setReps(''); setTime(''); setDist(''); setNotes(''); setRpe('');
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
@@ -132,7 +125,7 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
         </label>
       </div>
       {ex.trim() && !known && guess && (
-        <div className={`hint ${guess.confidence === 'high' ? 'ok' : ''}`}>New exercise → {guess.primary ?? 'unknown muscle'}{guess.secondary.length ? ` + ${guess.secondary.join(', ')}` : ''} ({guess.confidence === 'high' ? 'auto-mapped' : "you'll confirm it in Review"})</div>
+        <div className={`hint ${guess.confidence === 'high' ? 'ok' : ''}`}>New exercise “{cleanExerciseName(ex)}” → {guess.primary ?? 'unknown muscle'}{guess.secondary.length ? ` + ${guess.secondary.join(', ')}` : ''} ({guess.confidence === 'high' ? 'auto-mapped' : "you'll confirm it in Review"})</div>
       )}
       <div className="row">
         <label>Weight (lb){mode === 'endurance' && ' · optional'}<input type="number" step="0.5" value={weight} onChange={e => setWeight(e.target.value)} placeholder={mode === 'endurance' ? 'per hand' : '210'} /></label>
@@ -156,7 +149,7 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
       )}
       {t && <div id="time-hint" className={`hint ${t.ambiguous ? 'bad' : 'ok'}`}>{t.ambiguous ? `Can't read "${time}": ${t.reason}. Try 1:30, 90s or 2m30s.` : `= ${describe(t.seconds!)} (${t.seconds} s), saved as ${formatDuration(t.seconds)}`}</div>}
       {dd && <div className={`hint ${dd.ambiguous ? 'bad' : 'ok'}`}>{dd.ambiguous ? `Can't read "${dist}": ${dd.reason}. Add a unit (mi, km, m, yd, ft, steps).` : `= ${dd.value} ${dd.unit}${dd.meters != null ? ` (${Math.round(dd.meters)} m)` : ''}`}</div>}
-      <label>Notes · optional<input value={notes} onChange={e => setNotes(e.target.value)} /></label>
+      <NoteBox value={notes} onChange={setNotes} />
       <label>Sheet
         <select value={target} onChange={e => setFile(e.target.value)}>
           {targets.map(tg => <option key={tg.id} value={tg.id}>{tg.name}</option>)}
@@ -172,4 +165,24 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
 function describe(sec: number) {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.round(sec % 60);
   return [h && `${h} h`, m && `${m} min`, (s || (!h && !m)) && `${s} s`].filter(Boolean).join(' ');
+}
+
+const NOTE_CHIPS = ['Changed grip', 'Used straps', 'No straps', 'Seat / pad moved up', 'Seat / pad moved down', 'Different machine', 'Form changed', 'Slower reps / pauses', 'Grip gave out', 'Felt tired', 'Pain / tweak'];
+
+/** Note for this exercise. The app reads it the same way it reads notes in your sheets. */
+function NoteBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const r = value.trim() ? readNote(value) : null;
+  const add = (c: string) => onChange(value.trim() ? `${value.trim().replace(/[.;,]$/, '')}, ${c.toLowerCase()}` : c);
+  return (
+    <div className="notebox">
+      <label>Note for this exercise · optional
+        <textarea rows={2} value={value} onChange={e => onChange(e.target.value)} placeholder="e.g. changed my grip, used straps, moved seat to 4" />
+      </label>
+      <div className="chips">{NOTE_CHIPS.map(c => <button type="button" key={c} className="chip small" onClick={() => add(c)}>+ {c}</button>)}</div>
+      {r && (r.setupChange
+        ? <div className="hint ok">Read as a setup change ({r.tags.filter(t => SETUP_TAGS.includes(t)).map(t => TAG_LABEL[t]).join(', ')}) — this session becomes the new starting point, so a drop in weight or reps won't count as getting weaker.</div>
+        : r.tags.length ? <div className="hint">Read as: {r.summary}. Saved with the set; doesn't change the math.</div>
+          : <div className="hint">Saved with the set and shown in Log &amp; calendar.</div>)}
+    </div>
+  );
 }

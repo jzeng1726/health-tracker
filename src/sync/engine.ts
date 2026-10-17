@@ -7,7 +7,7 @@
  */
 import { ApiError, getBackend, type Backend, type UpdateInfo } from './backend';
 import {
-  findFolders, listFolderSheets, fetchSheetFile, valuesGet, valuesUpdate, valuesAppend, createConfigSheet, createTrainingLog,
+  findFolders, listFolderSheets, fetchSheetFile, valuesGet, valuesUpdate, valuesAppend, valuesBatchUpdate, ensureTab, createConfigSheet, createTrainingLog,
   quoteTab, type DriveItem,
 } from './google';
 import type { SheetFile, Dataset } from '../core/model';
@@ -19,6 +19,8 @@ import { SEED_CONFIG } from '../core/seedConfig';
 import { buildDataset } from '../core/ingest';
 import { classifyTab, headerMappingForRow, cellNumber } from '../core/classify';
 import { cellDate, colName, cellText } from '../core/grid';
+import { cleanExerciseName } from '../core/names';
+import { normalizeExerciseName } from '../core/muscles';
 
 export type AuthState = 'unknown' | 'connected' | 'disconnected' | 'expired';
 export interface SyncState {
@@ -41,7 +43,7 @@ export interface SyncState {
   backendKind: 'tauri' | 'mock';
 }
 
-const EMPTY_DATASET: Dataset = { bodyweight: [], sets: [], endurance: [], exercises: {}, review: [], files: [], autoMappings: {}, programs: [], gyms: ['Home gym'] };
+const EMPTY_DATASET: Dataset = { bodyweight: [], sets: [], endurance: [], exercises: {}, review: [], files: [], autoMappings: {}, programs: [], gyms: ['Training Station'], notes: [], life: [], changes: {}, nameFixes: [] };
 
 let state: SyncState = {
   ready: false, syncing: false, auth: 'unknown', lastSynced: null, error: null, folder: null, folderChoices: null,
@@ -185,11 +187,42 @@ async function doSync() {
     const auto = state.dataset.autoMappings;
     if (JSON.stringify(auto) !== JSON.stringify(config.autoMappings)) await setConfigKey('autoMappings', auto as any);
     startTimers();
+    if (await applyNameFixes()) setTimeout(() => { sync(); }, 800);
   } catch (e) {
     handleError(e);
   } finally {
     set({ syncing: false });
   }
+}
+
+/**
+ * Tidy exercise names in sheets YOU own ("Rope pushdown" -> "Rope Pushdown", merged names, typos).
+ * Only the exercise-name cell is written; numbers, dates and your coach's sheets are never touched.
+ * Each exact change is tried once per session, so a failed write can't loop.
+ */
+const attemptedFixes = new Set<string>();
+async function applyNameFixes(): Promise<boolean> {
+  if (!state.config.settings.rewriteNames || state.auth !== 'connected') return false;
+  const byFile = new Map<string, typeof state.dataset.nameFixes>();
+  for (const f of state.dataset.nameFixes) {
+    const file = state.files.find(x => x.id === f.fileId);
+    if (!file || file.viaShortcut || file.canEdit === false) continue;
+    if (state.email?.includes('@') && file.owner && file.owner.toLowerCase() !== state.email.toLowerCase()) continue;
+    const k = `${f.fileId}!${f.tab}!${colName(f.col)}${f.row + 1}=${f.to}`;
+    if (attemptedFixes.has(k)) continue;
+    attemptedFixes.add(k);
+    byFile.set(f.fileId, [...(byFile.get(f.fileId) ?? []), f]);
+  }
+  let wrote = false;
+  for (const [id, fixes] of byFile) {
+    try {
+      await valuesBatchUpdate(backend, id, fixes.map(f => ({ range: `${quoteTab(f.tab)}!${colName(f.col)}${f.row + 1}`, values: [[f.to]] })));
+      wrote = true;
+    } catch (e) {
+      handleError(e);
+    }
+  }
+  return wrote;
 }
 
 async function readRemoteConfig(id: string): Promise<ConfigRow[]> {
@@ -320,7 +353,10 @@ export interface WorkoutEntry {
   timeText?: string; distanceText?: string; notes?: string; gym?: string; rpe?: number | null;
 }
 
-export async function logWorkout(entry: WorkoutEntry, fileId?: string): Promise<{ where: string }> {
+export async function logWorkout(entryIn: WorkoutEntry, fileId?: string): Promise<{ where: string; name: string }> {
+  // save the clean name: an exercise you already have keeps its name, a new one gets capitals + typo fixes
+  const known = Object.values(state.dataset.exercises).find(x => x.name === normalizeExerciseName(entryIn.exercise) || x.variants.some(v => v.trim().toLowerCase() === entryIn.exercise.trim().toLowerCase()));
+  const entry = { ...entryIn, exercise: known?.display ?? cleanExerciseName(entryIn.exercise) };
   let target = fileId ?? state.config.settings.quickEntryWorkoutFile ?? workoutTargets()[0]?.id;
   if (!target) {
     if (!state.folder) throw new ApiError('CONFIG', 'Folder not loaded yet — refresh first.');
@@ -354,6 +390,29 @@ export async function logWorkout(entry: WorkoutEntry, fileId?: string): Promise<
     for (const [role, col] of Object.entries(C)) if (col != null && vals[role] != null) row[col] = vals[role]!;
     await valuesAppend(backend, target, `${quoteTab(tabTitle)}!A:${colName(width - 1)}`, [row], 'RAW');
   }
+  await sync();
+  return { where: `${file?.name ?? 'Training Log'} › ${tabTitle}`, name: entry.exercise };
+}
+
+// ------------------------------------------------------------------- Life Log
+
+export const LIFE_TAB = 'Life Log';
+export async function logLife(date: string, text: string, until?: string): Promise<{ where: string }> {
+  // the Life Log tab lives in your Training Log (created the first time)
+  let file = state.files.find(f => f.tabs.some(t => classifyTab(t, f.name, state.config.columnMappings[`${f.id}:${t.title}`]).kind === 'life-log'));
+  let target = file?.id;
+  let tabTitle = file?.tabs.find(t => classifyTab(t, file!.name).kind === 'life-log')?.title;
+  if (!target) {
+    target = state.config.settings.quickEntryWorkoutFile ?? state.files.find(f => f.name.trim().toLowerCase() === 'training log')?.id;
+    if (!target) {
+      if (!state.folder) throw new ApiError('CONFIG', 'Folder not loaded yet — refresh first.');
+      target = await createTrainingLog(backend, state.folder.id);
+      await setConfigKey('settings', { ...state.config.settings, quickEntryWorkoutFile: target });
+    }
+    file = state.files.find(f => f.id === target);
+    tabTitle = await ensureTab(backend, target, LIFE_TAB, ['Date', 'Until', 'Note', 'Logged from'], file?.tabs.map(t => t.title) ?? []);
+  }
+  await valuesAppend(backend, target, `${quoteTab(tabTitle!)}!A:D`, [[mdY(date), until ? mdY(until) : '', text.trim(), state.device]], 'RAW');
   await sync();
   return { where: `${file?.name ?? 'Training Log'} › ${tabTitle}` };
 }

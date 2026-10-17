@@ -137,10 +137,28 @@ export function unifiedSessions(list: SessionBest[], factors: Map<string, GymFac
 
 export interface ExerciseProgress { exercise: string; baseline: SessionBest | null; latest: SessionBest | null; pct: number | null; sessions: SessionBest[] }
 
-export function exerciseProgress(sessions: SessionBest[], rangeStart: string | null, rangeEnd?: string): ExerciseProgress {
+/**
+ * % change for each session of ONE exercise at ONE gym, chained across setup changes:
+ * on a session where a note says the setup changed (grip, straps, seat position, form…), that
+ * session becomes the new baseline and carries over the progress made so far — a lighter
+ * weight right after a change isn't counted as getting weaker.
+ */
+export function chainedPct(list: SessionBest[], changes?: Set<string> | string[]): number[] {
+  const ch = changes instanceof Set ? changes : new Set(changes ?? []);
+  let cum = 1, base = list[0]?.e1rm ?? 1;
+  return list.map((s, i) => {
+    if (i > 0 && ch.has(s.date) && s.e1rm != null && list[i - 1].e1rm != null) {
+      cum *= list[i - 1].e1rm! / base;
+      base = s.e1rm;
+    }
+    return cum * (s.e1rm! / base) - 1;
+  });
+}
+
+export function exerciseProgress(sessions: SessionBest[], rangeStart: string | null, rangeEnd?: string, changes?: string[]): ExerciseProgress {
   const inRange = sessions.filter(s => (!rangeStart || s.date >= rangeStart) && (!rangeEnd || s.date <= rangeEnd) && s.e1rm != null);
   const baseline = inRange[0] ?? null, latest = inRange[inRange.length - 1] ?? null;
-  const pct = baseline && latest && baseline !== latest ? latest.e1rm! / baseline.e1rm! - 1 : baseline ? 0 : null;
+  const pct = baseline && latest && baseline !== latest ? chainedPct(inRange, changes).at(-1)! : baseline ? 0 : null;
   return { exercise: sessions[0]?.exercise ?? '', baseline, latest, pct, sessions: inRange };
 }
 
@@ -156,6 +174,7 @@ function weightsFor(ex: ExerciseInfo, m: Muscle): number {
 /** % change series per muscle and overall, carried forward between sessions. */
 export function muscleScores(
   byEx: Map<string, SessionBest[]>, exercises: Record<string, ExerciseInfo>, rangeStart: string | null, rangeEnd?: string,
+  changes: Record<string, string[]> = {},
 ): { series: Record<Muscle | 'Overall', ScoreSeries>; current: Record<Muscle | 'Overall', number | null>; contributors: Record<Muscle, { exercise: string; gym: string; weight: number; pct: number | null }[]> } {
   // each gym is its own station: a vacation machine is compared only to itself
   const progress = new Map<string, SessionBest[]>();
@@ -170,13 +189,16 @@ export function muscleScores(
   const dates = [...new Set([...progress.values()].flat().map(s => s.date))].sort();
   const series = Object.fromEntries([...MUSCLES, 'Overall'].map(m => [m, [] as ScoreSeries])) as Record<Muscle | 'Overall', ScoreSeries>;
   const firstDate = dates[0];
+  const chains = new Map<SessionBest[], number[]>();
+  for (const [st, list] of progress) chains.set(list, chainedPct(list, changes[st]));
   const pctAt = (list: SessionBest[], date: string): number | null => {
-    const upto = list.filter(s => s.date <= date);
-    if (!upto.length) return null;
+    let i = -1;
+    while (i + 1 < list.length && list[i + 1].date <= date) i++;
+    if (i < 0) return null;
     // a lift (or a new gym) that joins later only counts once it has something to compare with,
     // so starting at a vacation gym doesn't drag the score toward 0%
-    if (upto.length === 1 && list[0].date !== firstDate) return null;
-    return upto[upto.length - 1].e1rm! / list[0].e1rm! - 1;
+    if (i === 0 && list[0].date !== firstDate) return null;
+    return chains.get(list)![i];
   };
   for (const date of dates) {
     let oNum = 0, oDen = 0;
@@ -205,7 +227,7 @@ export function muscleScores(
     if (!info) continue;
     for (const m of MUSCLES) {
       const w = weightsFor(info, m);
-      if (w) contributors[m].push({ exercise: exOf(st), gym: list[0].gym, weight: w, pct: list.length > 1 ? list[list.length - 1].e1rm! / list[0].e1rm! - 1 : 0 });
+      if (w) contributors[m].push({ exercise: exOf(st), gym: list[0].gym, weight: w, pct: list.length > 1 ? chains.get(list)!.at(-1)! : 0 });
     }
   }
   return { series, current, contributors };
@@ -280,12 +302,14 @@ export interface Plateau { exercise: string; gym: string; sessions: number; best
  * No new best est. 1RM in the last `n` sessions at that gym (within 0.5%), and you're still doing it
  * (last session within 4 weeks of `today`).
  */
-export function findPlateaus(byEx: Map<string, SessionBest[]>, today: string, n = 3): Plateau[] {
+export function findPlateaus(byEx: Map<string, SessionBest[]>, today: string, n = 3, changes: Record<string, string[]> = {}): Plateau[] {
   const out: Plateau[] = [];
   for (const [ex, list] of byEx) {
     const gyms = new Set(list.map(s => s.gym));
     for (const g of gyms) {
-      const st = list.filter(s => s.gym === g && s.e1rm != null);
+      // only sessions since the last setup change count — a new grip/position is a fresh start
+      const lastChange = (changes[stationKey(ex, g)] ?? []).at(-1);
+      const st = list.filter(s => s.gym === g && s.e1rm != null && (!lastChange || s.date >= lastChange));
       if (st.length < n + 1) continue;
       const last = st[st.length - 1];
       if (toDay(today) - toDay(last.date) > 28) continue;

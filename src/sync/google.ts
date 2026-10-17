@@ -89,6 +89,20 @@ export async function valuesUpdate(b: Backend, id: string, range: string, values
   return b.request('PUT', `${SHEETS}/${id}/values/${q(range)}?valueInputOption=${input}`, { range, majorDimension: 'ROWS', values });
 }
 
+/** Several ranges in one request (used to tidy exercise names in your own sheets). */
+export async function valuesBatchUpdate(b: Backend, id: string, data: { range: string; values: (string | number)[][] }[]) {
+  return b.request('POST', `${SHEETS}/${id}/values:batchUpdate`, { valueInputOption: 'RAW', data: data.map(d => ({ ...d, majorDimension: 'ROWS' })) });
+}
+
+/** Add a tab (if missing) with a header row. Returns the tab title. */
+export async function ensureTab(b: Backend, id: string, title: string, headers: string[], existing: string[]): Promise<string> {
+  if (!existing.includes(title)) {
+    await batchUpdate(b, id, [{ addSheet: { properties: { title, gridProperties: { frozenRowCount: 1 } } } }]);
+    await valuesUpdate(b, id, `${quoteTab(title)}!A1:${String.fromCharCode(64 + headers.length)}1`, [headers]);
+  }
+  return title;
+}
+
 export async function valuesAppend(b: Backend, id: string, range: string, values: (string | number)[][], input: 'RAW' | 'USER_ENTERED' = 'RAW') {
   return b.request('POST', `${SHEETS}/${id}/values/${q(range)}:append?valueInputOption=${input}&insertDataOption=INSERT_ROWS`, { range, majorDimension: 'ROWS', values });
 }

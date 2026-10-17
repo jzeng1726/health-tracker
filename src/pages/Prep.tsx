@@ -16,7 +16,7 @@ export default function Prep({ go }: { go: (p: Page) => void }) {
   const today = todayISO();
 
   const last = useMemo(() => lastSessionItems(ds, gym), [ds, gym]);
-  const atNonProgramGym = gym !== (s.config.gyms.defaultGym || 'Home gym') && !!last;
+  const atNonProgramGym = gym !== (s.config.gyms.defaultGym || 'Training Station') && !!last;
   const active: Choice = choice ?? (options.length && !atNonProgramGym ? { kind: 'program', label: options[0].label } : last ? { kind: 'last' } : { kind: 'program', label: options[0]?.label ?? '' });
   const opt = active.kind === 'program' ? options.find(o => o.label === active.label) ?? options[0] : null;
   const items: ProgramItem[] = active.kind === 'last' ? last?.items ?? [] : opt?.block.items ?? [];

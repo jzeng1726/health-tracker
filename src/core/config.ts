@@ -31,9 +31,9 @@ export function fnv1a(s: string): string {
   return h.toString(16).padStart(8, '0');
 }
 
-export type ColumnRole = 'date' | 'exercise' | 'bodyweight' | 'weight' | 'sets' | 'reps' | 'setsxreps' | 'time' | 'distance' | 'notes' | 'gym' | 'rpe' | 'muscle' | 'ignore';
+export type ColumnRole = 'date' | 'exercise' | 'bodyweight' | 'weight' | 'sets' | 'reps' | 'setsxreps' | 'time' | 'distance' | 'notes' | 'gym' | 'rpe' | 'muscle' | 'until' | 'ignore';
 export interface ColumnMapping {
-  type: 'bodyweight' | 'workout' | 'ignore';
+  type: 'bodyweight' | 'workout' | 'life' | 'ignore';
   headerRow: number; // 0-based
   columns: Partial<Record<ColumnRole, number>>;
   timeUnit?: 'seconds' | 'minutes' | 'hours';
@@ -51,6 +51,8 @@ export interface GymConfig {
   bySheet: Record<string, string>;
   /** "exercise|gym" -> your own conversion factor to the main gym (null = never convert) */
   factorOverrides: Record<string, number | null>;
+  /** old/other spellings (lowercase) -> gym name, e.g. "home gym" -> "Training Station" after a rename */
+  aliases?: Record<string, string>;
 }
 
 export interface Settings {
@@ -71,6 +73,8 @@ export interface Settings {
   weeklySetsMax: number;
   /** RIR assumed when a set has no RPE (you train every set close to failure) */
   defaultRir: number;
+  /** write cleaned exercise names (capitals, typos, merged names) back into sheets you own */
+  rewriteNames: boolean;
 }
 
 export interface AppConfig {
@@ -91,6 +95,8 @@ export interface AppConfig {
   columnMappings: Record<string, ColumnMapping>;
   settings: Settings;
   gyms: GymConfig;
+  /** canonical exercise -> the name to show (and write into your sheets) */
+  displayNames: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -105,21 +111,23 @@ export const DEFAULT_SETTINGS: Settings = {
   weeklySetsMin: 4,
   weeklySetsMax: 10,
   defaultRir: 1,
+  rewriteNames: true,
 };
 
-export const DEFAULT_GYMS: GymConfig = { defaultGym: 'Home gym', names: [], bySheet: {}, factorOverrides: {} };
+export const DEFAULT_GYMS: GymConfig = { defaultGym: 'Training Station', names: ['Firehouse Gym'], bySheet: {}, factorOverrides: {}, aliases: { 'home gym': 'Training Station', home: 'Training Station' } };
 
 export function defaultConfig(): AppConfig {
   return {
     version: 1, goals: {}, autoMappings: {}, exerciseOverrides: {}, merges: {}, rejectedMerges: [],
     corrections: [], dateAssignments: {}, ignored: [], columnMappings: {}, settings: { ...DEFAULT_SETTINGS },
     gyms: structuredClone(DEFAULT_GYMS),
+    displayNames: {},
   };
 }
 
 export const CONFIG_KEYS: (keyof AppConfig)[] = [
   'version', 'goals', 'autoMappings', 'exerciseOverrides', 'merges', 'rejectedMerges', 'corrections',
-  'dateAssignments', 'ignored', 'columnMappings', 'settings', 'gyms',
+  'dateAssignments', 'ignored', 'columnMappings', 'settings', 'gyms', 'displayNames',
 ];
 
 export interface ConfigRow { key: string; value: string; updatedAt: string; device: string }
@@ -196,6 +204,37 @@ export function migrateConfig(cfg: AppConfig): { config: AppConfig; changed: (ke
     if (ig.length !== out.ignored.length) { out.ignored = ig; changed.add('ignored'); }
     out.version = 2;
     changed.add('version');
+  }
+  if (out.version < 3) {
+    // v3 (Jeffrey, 2026-10-17): "Home gym" is now "Training Station"; add "Firehouse Gym";
+    // Recline Curl -> Tricep Supported Curls, Strict Alternating Hammer Curl -> Tricep Supported Alternating Hammer Curls,
+    // T-Bar (Wide Grip) -> Narrow Grip T-Bar Row (logs merged)
+    const g = { ...DEFAULT_GYMS, ...out.gyms };
+    const OLD = 'Home gym', NEW = 'Training Station';
+    if (g.defaultGym === OLD) {
+      g.defaultGym = NEW;
+      g.bySheet = Object.fromEntries(Object.entries(g.bySheet).map(([k, v]) => [k, v === OLD ? NEW : v]));
+      g.factorOverrides = Object.fromEntries(Object.entries(g.factorOverrides).map(([k, v]) => [k.endsWith(`|${OLD}`) ? `${k.slice(0, -OLD.length)}${NEW}` : k, v]));
+      g.aliases = { ...(g.aliases ?? {}), 'home gym': NEW, home: NEW };
+    }
+    if (!g.names.includes('Firehouse Gym')) g.names = [...g.names, 'Firehouse Gym'];
+    out.gyms = g;
+    changed.add('gyms');
+    out.merges = {
+      ...out.merges,
+      'recline curl': 'triceps supported curl',
+      'strict alternating hammer curl': 'triceps supported alternating hammer curl',
+      't bar wide grip': 'narrow grip t bar row',
+    };
+    changed.add('merges');
+    out.displayNames = {
+      ...(out.displayNames ?? {}),
+      'triceps supported curl': 'Tricep Supported Curls',
+      'triceps supported alternating hammer curl': 'Tricep Supported Alternating Hammer Curls',
+      'narrow grip t bar row': 'Narrow Grip T-Bar Row',
+    };
+    changed.add('displayNames');
+    out.version = 3;
   }
   return { config: out, changed: [...changed] };
 }

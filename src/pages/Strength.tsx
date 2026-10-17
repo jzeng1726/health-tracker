@@ -8,25 +8,33 @@ import {
 import { MUSCLES, type Muscle } from '../core/muscles';
 import { toDay, movingAverage, type MAPoint } from '../core/bodyweight';
 import { VolumeHeatmap } from '../ui/Heatmap';
+import type { NoteEntry } from '../core/model';
+import { SETUP_TAGS, TAG_LABEL } from '../core/notes';
 
 type Sel = Muscle | 'Overall';
 
 export default function Strength({ go }: { go: (p: Page) => void }) {
+  return <StrengthView go={go} scope="all" />;
+}
+
+/** Strength charts + exercise table, for every gym ("all") or one gym. */
+export function StrengthView({ go, scope, compact }: { go: (p: Page) => void; scope: string; compact?: boolean }) {
   const s = useSync();
   const { bounds } = useRange();
-  const ds = s.dataset;
+  const full = s.dataset;
+  const ds = useMemo(() => (scope === 'all' ? full : { ...full, sets: full.sets.filter(x => x.gym === scope), endurance: full.endurance.filter(x => x.gym === scope) }), [full, scope]);
   const [sel, setSel] = useState<Sel>('Overall');
   const [openEx, setOpenEx] = useState<string | null>(null);
 
-  const defGym = s.config.gyms.defaultGym || 'Home gym';
+  const defGym = s.config.gyms.defaultGym || 'Training Station';
   const d = useMemo(() => {
     const byEx = sessionsByExercise(ds.sets);
     const factors = gymFactors(byEx, s.config.gyms.factorOverrides, defGym);
     const ma = movingAverage(ds.bodyweight);
-    const scores = muscleScores(byEx, ds.exercises, bounds.start, bounds.end ?? undefined);
+    const scores = muscleScores(byEx, ds.exercises, bounds.start, bounds.end ?? undefined, ds.changes);
     const weeks = weeklySets(ds.sets, ds.endurance, ds.exercises, s.config.settings.enduranceCountsTowardVolume, null);
     const prs = strengthPRs(byEx).filter(p => inRange(p.date, bounds));
-    const plateaus = findPlateaus(byEx, todayISO());
+    const plateaus = findPlateaus(byEx, todayISO(), 3, ds.changes);
     // one row per exercise per gym — each gym's machine is its own scale
     const rows = [...byEx.entries()].flatMap(([ex, list]) => {
       const info = ds.exercises[ex];
@@ -34,7 +42,7 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
       const gyms = [...new Set(list.map(x => x.gym))];
       return gyms.map(g => {
         const st = list.filter(x => x.gym === g);
-        const prog = exerciseProgress(st, bounds.start, bounds.end ?? undefined);
+        const prog = exerciseProgress(st, bounds.start, bounds.end ?? undefined, ds.changes[stationKey(ex, g)]);
         const bw = prog.latest?.e1rm != null ? bodyweightOn(ma, prog.latest.date) : null;
         return { key: stationKey(ex, g), ex, gym: g, multiGym: gyms.length > 1, info, prog, all: list, rel: bw ? prog.latest!.e1rm! / bw : null, plateau: plateaus.find(p => p.exercise === ex && p.gym === g) ?? null };
       });
@@ -42,7 +50,7 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
     return { byEx, factors, ma, scores, weeks, prs, rows, plateaus };
   }, [ds, bounds, s.config.settings.enduranceCountsTowardVolume, s.config.gyms, defGym]);
 
-  if (!ds.sets.length) return <Empty title="No strength sets found">Workout sheets in the folder are detected automatically.</Empty>;
+  if (!ds.sets.length) return <Empty title={scope === 'all' ? 'No strength sets found' : `No sets logged at ${scope} yet`}>{scope === 'all' ? 'Workout sheets in the folder are detected automatically.' : 'Pick this gym in Quick Entry, add a Gym column to a sheet, or set a sheet\'s gym in Settings → Gyms.'}</Empty>;
 
   const series = d.scores.series[sel];
   const rows = d.rows
@@ -97,6 +105,7 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
                     {(r.multiGym || r.gym !== defGym) && <> <span className="pill gym">{r.gym}</span></>}
                     {r.info.confidence === 'low' || r.info.confidence === 'none' ? <> <span className="pill low">unconfirmed</span></> : null}
                     {r.plateau && <> <span className="pill warn" title={`no new best in ${r.plateau.sessions} sessions`}>plateau</span></>}
+                    {(ds.changes[r.key]?.length ?? 0) > 0 && <> <span className="pill note" title="a note says the setup changed — progress is measured from the new setup">✎ {ds.changes[r.key].length} setup change{ds.changes[r.key].length > 1 ? 's' : ''}</span></>}
                   </td>
                   <td className="hint">{r.info.primary}{r.info.secondary.length ? ` + ${r.info.secondary.join(', ')} (½)` : ''}</td>
                   <td className="n">{r.prog.sessions.length}</td>
@@ -106,7 +115,7 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
                   <td className="n">{r.prog.pct == null ? '—' : <span className={r.prog.pct > 0 ? 'delta-good' : r.prog.pct < 0 ? 'delta-bad' : ''}>{pct(r.prog.pct)}</span>}</td>
                   <td className="n">{l ? l.volume.toLocaleString() : '—'}</td>
                 </tr>,
-                openEx === r.key && <tr key={r.key + '-d'}><td colSpan={8}><ExerciseDetail all={r.all} gym={r.gym} bounds={bounds} name={r.info.display} factors={d.factors} ma={d.ma} defGym={defGym} plateau={r.plateau} /></td></tr>,
+                openEx === r.key && <tr key={r.key + '-d'}><td colSpan={8}><ExerciseDetail all={r.all} gym={r.gym} bounds={bounds} name={r.info.display} factors={d.factors} ma={d.ma} defGym={defGym} plateau={r.plateau} notes={ds.notes.filter(n => n.exercise === r.ex)} changes={ds.changes[r.key] ?? []} /></td></tr>,
               ];
             })}
           </tbody>
@@ -126,7 +135,7 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
           <div className="sub">new best estimated 1RM or heaviest weight at that gym, in range</div>
           {d.prs.length ? (
             <table>
-              <thead><tr><th>Date</th><th>Exercise</th><th>Type</th><th className="n">Value</th><th>Set</th></tr></thead>
+              <thead><tr><th>Date</th><th>Exercise</th><th>Type</th><th className="n" title="e1RM = estimated 1-rep max from that set; weight = heaviest weight used">Est. max / heaviest</th><th>Set</th></tr></thead>
               <tbody>{d.prs.slice(0, 25).map((p, i) => (
                 <tr key={i}><td>{shortDate(p.date)}</td><td>{ds.exercises[p.exercise]?.display ?? p.exercise}{p.gym && p.gym !== defGym && <> <span className="pill gym">{p.gym}</span></>}</td><td><span className="pill pr">{p.kind}</span></td><td className="n">{p.value}</td><td className="hint">{p.detail}</td></tr>
               ))}</tbody>
@@ -138,10 +147,11 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
   );
 }
 
-function ExerciseDetail({ all, gym, bounds, name, factors, ma, defGym, plateau }: {
+function ExerciseDetail({ all, gym, bounds, name, factors, ma, defGym, plateau, notes, changes }: {
   all: SessionBest[]; gym: string; bounds: { start: string | null; end: string | null }; name: string;
-  factors: Map<string, GymFactor>; ma: MAPoint[]; defGym: string; plateau: Plateau | null;
+  factors: Map<string, GymFactor>; ma: MAPoint[]; defGym: string; plateau: Plateau | null; notes: NoteEntry[]; changes: string[];
 }) {
+  const marks = changes.filter(d => inRange(d, bounds)).map(d => ({ day: toDay(d), label: 'setup change' }));
   const gyms = [...new Set(all.map(x => x.gym))];
   const main = mainGym(all, defGym);
   const unified = unifiedSessions(all, factors, defGym).filter(x => inRange(x.date, bounds));
@@ -164,7 +174,8 @@ function ExerciseDetail({ all, gym, bounds, name, factors, ma, defGym, plateau }
           <h3>{name} · est. 1RM{gyms.length > 1 ? ` on the ${main} scale` : ''}</h3>
           {gyms.length > 1 && <div className="hint">Open dots = sessions at another gym, converted. {facts.map(f => `${f.gym}: ${f.factor != null ? `×${f.factor.toFixed(2)} — ${f.detail}` : f.detail}`).join(' · ')}</div>}
           <TimeChart data={unified.map(x => ({ day: toDay(x.date), y: x.e1rmMain, set: `${x.weight} × ${x.reps}`, gym: x.gym, conv: x.converted, f: x.factor }))} yFmt={v => `${Math.round(v)}`} tipLabel="lb est. 1RM" height={200} hollowKey="conv"
-            tipExtra={p => p.conv ? `${p.gym}: ${p.set} × ${p.f.toFixed(2)} = ${Math.round(p.y)} on the ${main} scale` : `best set ${p.set}${gyms.length > 1 ? ` · ${p.gym}` : ''}`} />
+            xMarks={marks}
+            tipExtra={p => [p.conv ? `${p.gym}: ${p.set} × ${p.f.toFixed(2)} = ${Math.round(p.y)} on the ${main} scale` : `best set ${p.set}${gyms.length > 1 ? ` · ${p.gym}` : ''}`, notes.find(n => toDay(n.date) === p.day)?.text].filter(Boolean).join(' · ')} />
         </div>
         <div>
           <h3>Strength-to-bodyweight · est. 1RM ÷ 7-day avg weight</h3>
@@ -172,6 +183,19 @@ function ExerciseDetail({ all, gym, bounds, name, factors, ma, defGym, plateau }
             tipExtra={p => `${Math.round(p.e)} lb ÷ ${p.bw.toFixed(1)} lb`} />
         </div>
       </div>
+      {notes.length > 0 && (
+        <div className="notes-list">
+          <h3>Your notes on this exercise</h3>
+          {notes.map(n => (
+            <div key={n.key} className="note-row">
+              <span className="hint">{shortDate(n.date)}{n.gym !== gym ? ` · ${n.gym}` : ''}</span>
+              <span>“{n.text}”</span>
+              {n.setupChange ? <span className="pill note" title="progress is measured from this session on">new baseline · {n.tags.filter(t => SETUP_TAGS.includes(t)).map(t => TAG_LABEL[t]).join(', ')}</span>
+                : n.tags.length ? <span className="pill">{n.tags.map(t => TAG_LABEL[t]).join(', ')}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
       <table style={{ marginTop: 8 }}>
         <thead><tr><th>Date</th>{gyms.length > 1 && <th>Gym</th>}<th>Best set</th><th className="n">Est. 1RM</th><th className="n">Sets</th><th className="n">Volume</th><th>Source cell</th></tr></thead>
         <tbody>{[...all.filter(x => inRange(x.date, bounds))].reverse().map(x => (

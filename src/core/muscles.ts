@@ -37,7 +37,7 @@ const ABBREV: Record<string, string> = {
   pulldwn: 'pulldown', pushdwn: 'pushdown', dumbell: 'dumbbell', dumbells: 'dumbbell', dumbbells: 'dumbbell',
 };
 const KEEP_S = new Set(['press', 'biceps', 'triceps', 'abs', 'cross', 'glutes', 'plus', 'bus', 'across']);
-const IRREGULAR: Record<string, string> = { flies: 'fly', flyes: 'fly', carries: 'carry', crunches: 'crunch', presses: 'press', raises: 'raise', lunges: 'lunge' };
+const IRREGULAR: Record<string, string> = { ups: 'up', flies: 'fly', flyes: 'fly', carries: 'carry', crunches: 'crunch', presses: 'press', raises: 'raise', lunges: 'lunge' };
 
 function singular(w: string): string {
   if (IRREGULAR[w]) return IRREGULAR[w];
@@ -59,6 +59,17 @@ function vocab(): Set<string> {
   return VOCAB;
 }
 
+/** Split a run-together word keeping its plural ("hammercurls" -> ["hammer", "curls"]); null if it isn't one. */
+export function splitJoined(w: string): [string, string] | null {
+  const V = vocab();
+  if (w.length < 6 || V.has(w) || V.has(singular(w)) || /\d/.test(w)) return null;
+  for (let i = 2; i <= w.length - 2; i++) {
+    const a = w.slice(0, i), b = w.slice(i);
+    if ((V.has(a) || V.has(ABBREV[a] ?? '')) && (V.has(b) || V.has(singular(b)))) return [a, b];
+  }
+  return null;
+}
+
 function splitCompound(w: string): string[] {
   const V = vocab();
   if (w.length < 6 || V.has(w) || /\d/.test(w)) return [w];
@@ -70,12 +81,36 @@ function splitCompound(w: string): string[] {
   return [w];
 }
 
-/** lowercase, strip punctuation, DB->dumbbell, BB->barbell, 45°/45deg -> 45 degree, split run-together words, singularize */
+/** Common misspellings, fixed everywhere (display and matching). */
+export const TYPOS: Record<string, string> = {
+  laying: 'lying', extention: 'extension', extentions: 'extensions', extenstion: 'extension', pulldwon: 'pulldown', pushdwon: 'pushdown',
+  dumbell: 'dumbbell', dumbells: 'dumbbells', dumbel: 'dumbbell', tircep: 'tricep', tricpe: 'tricep', tricpes: 'triceps', bicpe: 'bicep',
+  latteral: 'lateral', lateal: 'lateral', raize: 'raise', sholder: 'shoulder', shoudler: 'shoulder', sholders: 'shoulders', hamstirng: 'hamstring',
+  calfs: 'calves', excercise: 'exercise', exersize: 'exercise', presss: 'press', curlss: 'curls', squatt: 'squat', deadlfit: 'deadlift', dealift: 'deadlift',
+  benchpress: 'bench press', legpress: 'leg press', legcurl: 'leg curl', legcurls: 'leg curls', chestpress: 'chest press',
+};
+
+/** A letters-only lowercase word with a known misspelling (or one letter off a known exercise word) fixed. */
+export function fixWord(w: string): string {
+  if (TYPOS[w]) return TYPOS[w];
+  const V = vocab();
+  if (w.length < 6 || V.has(w) || V.has(singular(w)) || ABBREV[w] || !/^[a-z]+$/.test(w)) return w;
+  const plural = w.endsWith('s') && !w.endsWith('ss');
+  const base = plural ? w.slice(0, -1) : w;
+  for (const v of V) {
+    // same first letter and one edit away ("pulldwon" -> "pulldown"); "recline" never becomes "decline"
+    if (v.length >= 6 && v[0] === base[0] && Math.abs(v.length - base.length) <= 1 && levenshtein(base, v) === 1) return plural ? `${v}s` : v;
+  }
+  return w;
+}
+
+/** lowercase, strip punctuation, DB->dumbbell, BB->barbell, 45°/45deg -> 45 degree, fix typos, split run-together words, singularize */
 export function normalizeExerciseName(name: string): string {
   let s = (name ?? '').toLowerCase();
   s = s.replace(/°/g, ' degree ').replace(/(\d+)\s*-?\s*(deg|degree|degrees)\b/g, '$1 degree');
   s = s.replace(/[^a-z0-9\s]/g, ' ');
   const words = s.split(/\s+/).filter(Boolean)
+    .flatMap(w => fixWord(w).split(' '))
     .flatMap(w => (ABBREV[w] ? [w] : splitCompound(w)))
     .flatMap(w => (ABBREV[w] ?? singular(w)).split(' '));
   return words.join(' ');
@@ -344,7 +379,7 @@ export function suggestMerges(names: string[]): MergeSuggestion[] {
       if (small.length >= 2 && small.every(t => big.includes(t))) {
         const extra = big.filter(t => !small.includes(t));
         // a different grip or angle is a different exercise ("wide grip", "incline"), so those never get suggested
-        const VARIANT = new Set(['wide', 'close', 'narrow', 'neutral', 'grip', 'incline', 'decline', 'reverse', 'single', 'one', 'v', 'mag', 'high', 'low', 'overhand', 'underhand']);
+        const VARIANT = new Set(['wide', 'close', 'narrow', 'neutral', 'grip', 'incline', 'decline', 'reverse', 'single', 'one', 'v', 'mag', 'high', 'low', 'overhand', 'underhand', 'alternating', 'strict']);
         if (extra.every(t => (STOPWORDS.has(t) || ['seated', 'machine', 'double', 'arm'].includes(t)) && !VARIANT.has(t))) {
           out.push({ a, b, why: `same words plus "${extra.join(' ')}"` });
         }

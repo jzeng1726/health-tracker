@@ -8,7 +8,10 @@ import { parseDurationCell, parseDistance, formatDuration } from './time';
 import { fnv1a, type AppConfig, type ColumnMapping, type Correction } from './config';
 import type {
   BodyweightEntry, Dataset, EnduranceEntry, ExerciseInfo, ReviewItem, SheetFile, SheetTab, StrengthSet, FileSummary, Program, ProgramBlock,
+  NoteEntry, LifeEntry, NameFix,
 } from './model';
+import { readNote, readLifeNote } from './notes';
+import { cleanExerciseName } from './names';
 import { classifyTab, headerMappingForRow, cellNumber } from './classify';
 import { parseGrid, cellText, cellDate, colName, isProgramGrid, type GridEntry } from './grid';
 import { detectMuscles, normalizeExerciseName, suggestMerges, withSheetMuscle, wordSetKey, type MuscleMapping } from './muscles';
@@ -49,8 +52,22 @@ function applyCorrections(file: SheetFile, tab: SheetTab, config: AppConfig, orp
 
 /** Default gym for a sheet: your Settings choice, else "Vacation gym" for vacation/travel sheets, else your main gym. */
 export function gymForFile(file: { id: string; name: string }, config: AppConfig): string {
-  const g = config.gyms ?? { defaultGym: 'Home gym', bySheet: {} as Record<string, string> };
-  return g.bySheet?.[file.id] ?? (/\b(vacation|travel|trip|hotel|away|visiting)\b/i.test(file.name) ? 'Vacation gym' : g.defaultGym || 'Home gym');
+  const g = config.gyms ?? { defaultGym: 'Training Station', bySheet: {} as Record<string, string> };
+  const set = g.bySheet?.[file.id];
+  return set ? normalizeGym(set, config) : (/\b(vacation|travel|trip|hotel|away|visiting)\b/i.test(file.name) ? 'Vacation gym' : g.defaultGym || 'Home gym');
+}
+
+/** "home gym" -> "Training Station" after a rename; "firehouse" -> "Firehouse Gym"; otherwise as typed. */
+export function normalizeGym(name: string, config: AppConfig): string {
+  const n = name.trim();
+  const low = n.toLowerCase();
+  const g = config.gyms;
+  if (!n) return g?.defaultGym || 'Training Station';
+  if (g?.aliases?.[low]) return g.aliases[low];
+  // logs written before the rename say "Home gym"
+  if ((low === 'home gym' || low === 'home') && g?.defaultGym) return g.defaultGym;
+  const known = [g?.defaultGym, ...(g?.names ?? []), 'Vacation gym'].filter(Boolean) as string[];
+  return known.find(k => k.toLowerCase() === low) ?? known.find(k => k.toLowerCase().replace(/\s*gym$/, '') === low.replace(/\s*gym$/, '')) ?? n;
 }
 
 /** Logged-result cells of a file ("C15=130x9"), used to spot copies of the same sheet. Planned prescriptions don't count. */
@@ -111,11 +128,13 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
   const review: ReviewItem[] = [];
   const fileSummaries: FileSummary[] = [];
   const programs: Program[] = [];
+  const life: LifeEntry[] = [];
+  const nameCells: { fileId: string; fileName: string; tab: string; row: number; col: number; raw: string; canonical: string; own: boolean }[] = [];
   const rawNames = new Map<string, Map<string, number>>(); // canonical -> raw -> count
   const sheetMuscle = new Map<string, string>();            // canonical -> muscle named by the sheet
   const ignored = new Set(config.ignored);
   const addReview = (item: ReviewItem) => { if (!ignored.has(item.id)) review.push(item); };
-  const gymsSeen = new Set<string>([config.gyms?.defaultGym || 'Home gym', ...(config.gyms?.names ?? [])]);
+  const gymsSeen = new Set<string>([config.gyms?.defaultGym || 'Training Station', ...(config.gyms?.names ?? [])]);
 
   const present = new Set(files.map(f => f.id));
   const presentHash = new Set(files.map(f => fnv1a(f.id)));
@@ -173,6 +192,7 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     }
     const fileGym = gymForFile(file, config);
     gymsSeen.add(fileGym);
+    const own = file.canEdit !== false && !file.viaShortcut;
     for (const tab of file.tabs) {
       const mapKey = `${file.id}:${tab.title}`;
       const cls = classifyTab(tab, file.name, config.columnMappings[mapKey]);
@@ -185,6 +205,19 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
 
       if (cls.kind === 'unknown') {
         addReview({ id: `sheet:${mapKey}`, kind: 'sheet', title: `${file.name} › ${tab.title}`, detail: cls.reason, fileId: file.id, tab: tab.title });
+        continue;
+      }
+
+      if (cls.kind === 'life-log') {
+        const C = cls.mapping!.columns;
+        for (let r = cls.mapping!.headerRow + 1; r < rows.length; r++) {
+          const row = rows[r] ?? [];
+          const date = fixYear(cellDate(row[C.date!], year), file.modifiedTime);
+          const text = cellText(row[C.notes!]);
+          if (!date || !text) continue;
+          const until = C.until != null ? fixYear(cellDate(row[C.until], year), file.modifiedTime) ?? undefined : undefined;
+          life.push({ date, until: until && until > date ? until : undefined, text, tags: readLifeNote(text), ref: refOf(r, C.notes!) });
+        }
         continue;
       }
 
@@ -214,6 +247,7 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
           if (!norm) continue;
           const canonical = resolveCanonical(norm, config.merges);
           seen(canonical, e.exercise);
+          if (!rows[e.row]?.[e.col - 2]?.fx) nameCells.push({ fileId: file.id, fileName: file.name, tab: tab.title, row: e.row, col: e.col - 2, raw: e.exercise, canonical, own });
           const bk = `${e.block.headerRow}:${e.block.exCol}`;
           const block = blocks.get(bk) ?? { dayLabel: e.dayLabel, headerRow: e.block.headerRow, exCol: e.block.exCol, date: null, items: [], logged: 0 };
           block.items.push({ exercise: canonical, display: e.exercise.trim(), prescription: e.prescription, notes: e.extraNotes, result: e.resultText });
@@ -241,7 +275,9 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
               suggestion: parsed.timeAmbiguous && parsed.guessSeconds != null ? formatDuration(parsed.guessSeconds) : (parsed as any).suggestion,
             });
           }
-          pushParsed(parsed, canonical, m, { key, ref, fileId: file.id, date, raw: e.resultText, gym: fileGym });
+          // notes: text after the numbers + lines written under the exercise ("1 Higher pad position")
+          const note = [parsed.note, ...e.extraNotes].filter(x => x && !/^(each|per (side|leg|arm))$/i.test(x.trim())).join(' · ') || undefined;
+          pushParsed({ ...parsed, note }, canonical, m, { key, ref, fileId: file.id, date, raw: e.resultText, gym: fileGym });
         }
         // one date picker per block instead of one per exercise
         for (const [, u] of undatedByBlock) {
@@ -270,6 +306,7 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
           const norm = normalizeExerciseName(exRaw);
           const canonical = resolveCanonical(norm, config.merges);
           seen(canonical, exRaw);
+          if (!row[C.exercise!]?.fx) nameCells.push({ fileId: file.id, fileName: file.name, tab: tab.title, row: r, col: C.exercise!, raw: exRaw, canonical, own });
           const label = C.muscle != null ? cellText(row[C.muscle]) : '';
           if (label && !sheetMuscle.has(canonical)) sheetMuscle.set(canonical, label);
           const key = keyOf(r, C.exercise!);
@@ -282,7 +319,7 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
             continue;
           }
           const gymCell = C.gym != null ? cellText(row[C.gym]) : '';
-          const gym = gymCell || fileGym;
+          const gym = gymCell ? normalizeGym(gymCell, config) : fileGym;
           gymsSeen.add(gym);
           let rpe: number | undefined;
           if (C.rpe != null) {
@@ -350,6 +387,7 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     for (const x of sets) x.exercise = remap(x.exercise);
     for (const x of endurance) x.exercise = remap(x.exercise);
     for (const p of programs) for (const b of p.blocks) for (const it of b.items) it.exercise = remap(it.exercise);
+    for (const c of nameCells) c.canonical = remap(c.canonical);
     for (const [alias, target] of autoMerge) {
       const a = rawNames.get(alias)!, t = rawNames.get(target) ?? new Map<string, number>();
       for (const [raw, n] of a) t.set(raw, (t.get(raw) ?? 0) + n);
@@ -371,17 +409,6 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     }
   }
 
-  // ---- possible typos, judged against the sessions just before and after (same exercise, same gym)
-  for (const t of typoSuspects(sets)) {
-    const s = t.set;
-    const parts = s.key.split('#')[0].split('!');
-    addReview({
-      id: `typo:${s.key}`, kind: 'value', title: `${s.exercise} · ${s.date}`, fileId: s.fileId, tab: parts.slice(1, -1).join('!'), cell: parts.at(-1),
-      detail: `${s.weight} lb is far from the sessions around it (${t.context}) — possible typo (still counted until you fix it)`,
-      ref: s.ref, key: s.key, raw: s.raw, suggestion: t.suggestion != null ? s.raw.replace(String(s.weight), String(t.suggestion)) : undefined,
-    });
-  }
-
   // ---- exercise registry
   const exercises: Record<string, ExerciseInfo> = {};
   const autoMappings: Dataset['autoMappings'] = {};
@@ -391,8 +418,12 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
   for (const [canonical, raws] of rawNames) {
     const { m, confirmed } = mappingFor(canonical);
     const variants = [...raws.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0]);
+    // the name it's shown (and written) as: your chosen name, else the most common spelling of this exact
+    // exercise (not of a name merged into it), cleaned up: "Rope pushdown" -> "Rope Pushdown"
+    const own = variants.find(v => normalizeExerciseName(v) === canonical) ?? variants[0];
+    const display = config.displayNames?.[canonical] ?? cleanExerciseName(own);
     exercises[canonical] = {
-      name: canonical, display: variants[0], variants, primary: m.primary, secondary: m.secondary, kind: m.kind,
+      name: canonical, display, variants, primary: m.primary, secondary: m.secondary, kind: m.kind,
       enduranceType: m.enduranceType, bodyweight: m.bodyweight, confidence: confirmed ? 'confirmed' : m.confidence,
       source: m.source, rule: m.rule, reason: m.reason, count: counts.get(canonical) ?? 0,
     };
@@ -420,10 +451,49 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     addReview({ id: `merge:${id}`, kind: 'merge', title: `Same exercise? "${exercises[s.a]?.display ?? s.a}" and "${exercises[s.b]?.display ?? s.b}"`, detail: s.why, merge: { a: s.a, b: s.b } });
   }
 
-  const def = config.gyms?.defaultGym || 'Home gym';
+  // ---- notes written next to sets: read them, and turn setup changes into new baselines
+  const notes: NoteEntry[] = [];
+  const changes: Record<string, string[]> = {};
+  const seenNote = new Set<string>();
+  for (const x of [...sets, ...endurance]) {
+    if (!x.note) continue;
+    const base = x.key.split('#')[0];
+    if (seenNote.has(base)) continue;
+    seenNote.add(base);
+    const r = readNote(x.note);
+    const w = 'reps' in x ? `${x.weight ?? 'BW'} × ${x.reps}` : x.raw;
+    notes.push({ date: x.date, exercise: x.exercise, gym: x.gym, text: x.note, tags: r.tags, setupChange: r.setupChange, ref: x.ref, key: base, set: w });
+    if (r.setupChange) {
+      const st = `${x.exercise}|${x.gym}`;
+      if (!(changes[st] ?? []).includes(x.date)) changes[st] = [...(changes[st] ?? []), x.date].sort();
+    }
+  }
+  notes.sort((a, b) => b.date.localeCompare(a.date));
+  life.sort((a, b) => b.date.localeCompare(a.date));
+
+  // ---- possible typos, judged against the sessions just before and after (same exercise, same gym)
+  for (const t of typoSuspects(sets, changes)) {
+    const s = t.set;
+    const parts = s.key.split('#')[0].split('!');
+    addReview({
+      id: `typo:${s.key}`, kind: 'value', title: `${s.exercise} · ${s.date}`, fileId: s.fileId, tab: parts.slice(1, -1).join('!'), cell: parts.at(-1),
+      detail: `${s.weight} lb is far from the sessions around it (${t.context}) — possible typo (still counted until you fix it)`,
+      ref: s.ref, key: s.key, raw: s.raw, suggestion: t.suggestion != null ? s.raw.replace(String(s.weight), String(t.suggestion)) : undefined,
+    });
+  }
+
+  // ---- exercise names to tidy up in sheets you own (never your coach's)
+  const nameFixes: NameFix[] = [];
+  for (const c of nameCells) {
+    if (!c.own) continue;
+    const to = exercises[c.canonical]?.display;
+    if (to && c.raw.trim() !== to) nameFixes.push({ fileId: c.fileId, fileName: c.fileName, tab: c.tab, row: c.row, col: c.col, from: c.raw, to });
+  }
+
+  const def = config.gyms?.defaultGym || 'Training Station';
   return {
     bodyweight: [...bwByDate.values()], sets, endurance, exercises, review, files: fileSummaries, autoMappings, programs,
-    gyms: [def, ...[...gymsSeen].filter(g => g !== def)],
+    gyms: [def, ...[...gymsSeen].filter(g => g !== def)], notes, life, changes, nameFixes,
   };
 }
 
@@ -463,7 +533,7 @@ export function autoMerges(names: string[], config: AppConfig, weight: (n: strin
 }
 
 /** Sets whose weight is ≥2× off BOTH the session before and the session after (≥3× when only one neighbour exists). */
-export function typoSuspects(sets: StrengthSet[]): { set: StrengthSet; context: string; suggestion: number | null }[] {
+export function typoSuspects(sets: StrengthSet[], changes: Record<string, string[]> = {}): { set: StrengthSet; context: string; suggestion: number | null }[] {
   const byStation = new Map<string, Map<string, number[]>>();
   for (const s of sets) {
     if (s.weight == null || s.weight <= 0) continue;
@@ -476,6 +546,8 @@ export function typoSuspects(sets: StrengthSet[]): { set: StrengthSet; context: 
   const out: { set: StrengthSet; context: string; suggestion: number | null }[] = [];
   for (const s of sets) {
     if (s.weight == null || s.weight <= 0) continue;
+    // a note said the setup changed that day — a big jump is expected, not a typo
+    if ((changes[`${s.exercise}|${s.gym}`] ?? []).includes(s.date)) continue;
     const days = byStation.get(`${s.exercise}|${s.gym}`)!;
     const dates = [...days.keys()].sort();
     const i = dates.indexOf(s.date);

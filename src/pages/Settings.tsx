@@ -96,6 +96,12 @@ export default function Settings({ theme, setTheme, go }: { theme: string; setTh
         </div>
       </div>
 
+      <Section title="Exercise names" />
+      <div className="card form">
+        <label className="toggle"><input type="checkbox" checked={st.rewriteNames} onChange={e => upd({ rewriteNames: e.target.checked })} />Tidy exercise names in sheets I own (capitals, typos, merged names) on every refresh</label>
+        <div className="hint">Only the exercise-name cell is changed — never weights, reps or dates — and your coach's sheets are never edited. {s.dataset.nameFixes.length ? `${s.dataset.nameFixes.length} name${s.dataset.nameFixes.length > 1 ? 's' : ''} waiting to be tidied.` : 'All names are tidy.'}</div>
+      </div>
+
       <Section title="Exercise → muscle map" right={<button className="btn small" onClick={() => go('review')}>Open map</button>} />
       <div className="card hint">
         {Object.keys(s.dataset.exercises).length} exercises · {Object.keys(s.config.exerciseOverrides).length} set by you · {Object.keys(s.config.merges).length} merged names. Your edits always override automatic detection.
@@ -140,6 +146,17 @@ export default function Settings({ theme, setTheme, go }: { theme: string; setTh
   );
 }
 
+function AddGym({ onAdd, existing }: { onAdd: (n: string) => void; existing: string[] }) {
+  const [v, setV] = useState('');
+  const ok = v.trim() && !existing.some(x => x.toLowerCase() === v.trim().toLowerCase());
+  return (
+    <span style={{ display: 'inline-flex', gap: 4 }}>
+      <input value={v} onChange={e => setV(e.target.value)} placeholder="Add a gym" style={{ width: 150 }} onKeyDown={e => { if (e.key === 'Enter' && ok) { onAdd(v.trim()); setV(''); } }} />
+      <button className="btn small" disabled={!ok} onClick={() => { onAdd(v.trim()); setV(''); }}>Add</button>
+    </span>
+  );
+}
+
 function NumberSetting({ value, step, onSave }: { value: number; step: number; onSave: (v: number) => void }) {
   const [v, setV] = useState(String(value));
   const n = Number(v);
@@ -168,7 +185,20 @@ function GymsSettings() {
           <label>Your main gym's name
             <span style={{ display: 'flex', gap: 6 }}>
               <input value={mainName} onChange={e => setMainName(e.target.value)} />
-              {mainName.trim() && mainName.trim() !== g.defaultGym && <button className="btn small" onClick={() => save({ defaultGym: mainName.trim() })}>Rename</button>}
+              {mainName.trim() && mainName.trim() !== g.defaultGym && <button className="btn small" onClick={() => {
+                const nw = mainName.trim(), old = g.defaultGym;
+                save({
+                  defaultGym: nw, aliases: { ...(g.aliases ?? {}), [old.toLowerCase()]: nw },
+                  bySheet: Object.fromEntries(Object.entries(g.bySheet).map(([k, v]) => [k, v === old ? nw : v])),
+                  factorOverrides: Object.fromEntries(Object.entries(g.factorOverrides).map(([k, v]) => [k.endsWith(`|${old}`) ? `${k.slice(0, -old.length)}${nw}` : k, v])),
+                });
+              }}>Rename</button>}
+            </span>
+          </label>
+          <label>Your other gyms
+            <span className="chips" style={{ alignItems: 'center' }}>
+              {g.names.map(n => <span key={n} className="chip">{n}<button className="x" aria-label={`Remove ${n}`} onClick={() => save({ names: g.names.filter(x => x !== n) })}>×</button></span>)}
+              <AddGym onAdd={n => save({ names: [...g.names, n] })} existing={[g.defaultGym, ...g.names]} />
             </span>
           </label>
         </div>

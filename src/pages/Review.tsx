@@ -5,6 +5,7 @@ import { MUSCLES, type Muscle } from '../core/muscles';
 import type { ReviewItem, ExerciseInfo } from '../core/model';
 import type { ColumnMapping, ColumnRole } from '../core/config';
 import { cellText } from '../core/grid';
+import { cleanExerciseName } from '../core/names';
 
 export default function Review() {
   const s = useSync();
@@ -13,7 +14,7 @@ export default function Review() {
     { kind: 'exercise', title: 'Exercises to confirm', sub: 'the app wasn\'t sure which muscles these work — best guess preselected' },
     { kind: 'merge', title: 'Possible duplicates', sub: 'names that look like the same exercise' },
     { kind: 'undated', title: 'Entries with no date', sub: 'left out of charts until you pick the day' },
-    { kind: 'value', title: 'Values to check', sub: 'unclear or unusual values (sheets are never changed)' },
+    { kind: 'value', title: 'Values to check', sub: 'unclear or unusual values — your fix is saved in the app; the number in the sheet stays as typed' },
     { kind: 'conflict', title: 'Conflicts', sub: '' },
     { kind: 'sheet', title: 'Sheets that need column mapping', sub: 'map once; saved to _config so both computers use it' },
   ];
@@ -95,7 +96,7 @@ function ExerciseReview({ item }: { item: ReviewItem }) {
   return (
     <div className="review-item">
       <div>
-        <div className="t">{item.title} <span className="hint">· {info?.count ?? 0} logged sets</span></div>
+        <div className="t">{info?.display ?? item.title} <span className="hint">· {info?.count ?? 0} logged sets</span></div>
         <div className="d" style={{ marginBottom: 6 }}>{item.detail}</div>
         <MusclePicker primary={p} secondary={sec} onChange={(a, b) => { setP(a); setSec(b); }} />
       </div>
@@ -141,7 +142,7 @@ function ValueReview({ item }: { item: ReviewItem }) {
 }
 
 const ROLES: ColumnRole[] = ['ignore', 'date', 'exercise', 'bodyweight', 'weight', 'sets', 'reps', 'setsxreps', 'time', 'distance', 'notes', 'muscle', 'gym', 'rpe'];
-const ROLE_LABEL: Record<ColumnRole, string> = { ignore: '—', date: 'Date', exercise: 'Exercise', bodyweight: 'Bodyweight', weight: 'Load (lb)', sets: 'Sets', reps: 'Reps', setsxreps: 'Sets×Reps (3x8)', time: 'Time', distance: 'Distance', notes: 'Notes', muscle: 'Muscle group', gym: 'Gym', rpe: 'RPE' };
+const ROLE_LABEL: Record<ColumnRole, string> = { ignore: '—', date: 'Date', exercise: 'Exercise', bodyweight: 'Bodyweight', weight: 'Load (lb)', sets: 'Sets', reps: 'Reps', setsxreps: 'Sets×Reps (3x8)', time: 'Time', distance: 'Distance', notes: 'Notes', muscle: 'Muscle group', gym: 'Gym', rpe: 'RPE', until: 'Until (date)' };
 
 function SheetMapper({ item }: { item: ReviewItem }) {
   const s = useSync();
@@ -190,40 +191,55 @@ function ExerciseMap() {
   const s = useSync();
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ p: Muscle | null; s: Muscle[] }>({ p: null, s: [] });
-  const list = Object.values(s.dataset.exercises).sort((a, b) => (a.primary ?? 'zz').localeCompare(b.primary ?? 'zz') || a.display.localeCompare(b.display));
+  const [q, setQ] = useState('');
+  const all = Object.values(s.dataset.exercises).filter(ex => !q.trim() || ex.display.toLowerCase().includes(q.trim().toLowerCase()));
   const save = (ex: ExerciseInfo) => { setConfigKey('exerciseOverrides', { ...s.config.exerciseOverrides, [ex.name]: { primary: draft.p, secondary: draft.s, confirmed: true } }); setEditing(null); };
   const reset = (ex: ExerciseInfo) => { const o = { ...s.config.exerciseOverrides }; delete o[ex.name]; setConfigKey('exerciseOverrides', o); };
   const merged = Object.entries(s.config.merges);
+  const groups: { title: string; list: ExerciseInfo[] }[] = [
+    ...MUSCLES.map(m => ({ title: m as string, list: all.filter(ex => ex.kind === 'strength' && ex.primary === m) })),
+    { title: 'Endurance & timed', list: all.filter(ex => ex.kind !== 'strength') },
+    { title: 'Not assigned yet', list: all.filter(ex => ex.kind === 'strength' && !ex.primary) },
+  ].filter(g => g.list.length);
   return (
     <>
-      <Section title="Full exercise → muscle map" sub="your edits always override the automatic rules · synced to both computers" />
-      <div className="card table-wrap">
-        <table>
-          <thead><tr><th>Exercise</th><th>Primary</th><th>Secondary (50%)</th><th>Type</th><th>Source</th><th className="n">Sets</th><th /></tr></thead>
-          <tbody>{list.map(ex => editing === ex.name ? (
-            <tr key={ex.name}><td>{ex.display}</td><td colSpan={5}><MusclePicker primary={draft.p} secondary={draft.s} onChange={(p, sec) => setDraft({ p, s: sec })} /></td>
-              <td><div style={{ display: 'flex', gap: 4 }}><button className="btn primary small" onClick={() => save(ex)}>Save</button><button className="btn small ghost" onClick={() => setEditing(null)}>Cancel</button></div></td></tr>
-          ) : (
-            <tr key={ex.name}>
-              <td>{ex.display}{ex.variants.length > 1 && <div className="hint">also: {ex.variants.slice(1).join(', ')}</div>}</td>
-              <td>{ex.primary ?? '—'}</td><td>{ex.secondary.join(', ') || '—'}</td>
-              <td className="hint">{ex.kind}{ex.enduranceType ? ` · ${ex.enduranceType.replace('_', ' ')}` : ''}</td>
-              <td>{ex.confidence === 'confirmed' ? <span className="pill pr">yours</span> : ex.source === 'mandatory' ? <span className="pill">your rule · {ex.rule.split(' ')[0]}</span> : ex.confidence === 'high' ? <span className="pill">auto</span> : <span className="pill low">unconfirmed</span>}</td>
-              <td className="n">{ex.count}</td>
-              <td><div style={{ display: 'flex', gap: 4 }}><button className="btn small" onClick={() => { setEditing(ex.name); setDraft({ p: ex.primary, s: ex.secondary }); }}>Edit</button>
-                {ex.confidence === 'confirmed' && <button className="btn small ghost" onClick={() => reset(ex)} title="Go back to automatic detection">Reset</button>}</div></td>
-            </tr>
-          ))}</tbody>
-        </table>
+      <Section title="Your exercises by muscle" sub="your edits always win · synced to both computers"
+        right={<input value={q} onChange={e => setQ(e.target.value)} placeholder="Search exercises" style={{ width: 200 }} aria-label="Search exercises" />} />
+      <div className="muscle-groups">
+        {groups.map(g => (
+          <div key={g.title} className="card mg">
+            <div className="mg-head"><h2>{g.title}</h2><span className="pill">{g.list.length}</span></div>
+            {g.list.sort((a, b) => b.count - a.count || a.display.localeCompare(b.display)).map(ex => editing === ex.name ? (
+              <div key={ex.name} className="mg-row editing">
+                <div className="mg-name">{ex.display}</div>
+                <MusclePicker primary={draft.p} secondary={draft.s} onChange={(p, sec) => setDraft({ p, s: sec })} />
+                <div style={{ display: 'flex', gap: 6, marginTop: 6 }}><button className="btn primary small" onClick={() => save(ex)}>Save</button><button className="btn small ghost" onClick={() => setEditing(null)}>Cancel</button></div>
+              </div>
+            ) : (
+              <div key={ex.name} className="mg-row">
+                <div className="mg-name">
+                  {ex.display}
+                  {ex.confidence === 'low' || ex.confidence === 'none' ? <span className="pill low">check</span> : null}
+                  {ex.secondary.length > 0 && <span className="hint mg-sec">+ {ex.secondary.join(', ')} (½)</span>}
+                </div>
+                <div className="mg-meta">
+                  <span className="hint num">{ex.count} set{ex.count === 1 ? '' : 's'}</span>
+                  <button className="btn small ghost" onClick={() => { setEditing(ex.name); setDraft({ p: ex.primary, s: ex.secondary }); }}>Edit</button>
+                  {ex.confidence === 'confirmed' && <button className="btn small ghost" onClick={() => reset(ex)} title="Go back to automatic detection">Reset</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
       </div>
       {merged.length > 0 && (
-        <>
-          <Section title="Merged names" sub="alias → counted as" />
-          <div className="card table-wrap"><table><tbody>{merged.map(([a, b]) => (
-            <tr key={a}><td><code>{a}</code></td><td>→ {s.dataset.exercises[b]?.display ?? b}</td>
+        <details className="card merged">
+          <summary><b>Merged names ({merged.length})</b> <span className="hint">— names counted as one exercise</span></summary>
+          <table><tbody>{merged.map(([a, b]) => (
+            <tr key={a}><td>{cleanExerciseName(a)}</td><td>→ {s.dataset.exercises[b]?.display ?? cleanExerciseName(b)}</td>
               <td style={{ textAlign: 'right' }}><button className="btn small ghost" onClick={() => { const m = { ...s.config.merges }; delete m[a]; setConfigKey('merges', m); }}>Un-merge</button></td></tr>
-          ))}</tbody></table></div>
-        </>
+          ))}</tbody></table>
+        </details>
       )}
     </>
   );

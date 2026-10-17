@@ -33,8 +33,8 @@ describe('gyms', () => {
     expect(gymForFile(vacation, defaultConfig())).toBe('Vacation gym');
     expect(ds.sets.filter(s => s.fileId === 'vac').every(s => s.gym === 'Vacation gym')).toBe(true);
     expect(ds.sets.find(s => s.date === '2026-10-11')!.gym).toBe('Gym B');
-    expect(ds.gyms[0]).toBe('Home gym');
-    expect(new Set(ds.gyms)).toEqual(new Set(['Home gym', 'Vacation gym', 'Hotel gym', 'Gym B']));
+    expect(ds.gyms[0]).toBe('Training Station');
+    expect(new Set(ds.gyms)).toEqual(new Set(['Training Station', 'Firehouse Gym', 'Vacation gym', 'Hotel gym', 'Gym B']));
   });
   it('Settings choice per sheet wins', () => {
     const cfg = defaultConfig(); cfg.gyms.bySheet.vac = 'Mom\'s gym';
@@ -52,11 +52,11 @@ describe('gyms', () => {
     const byEx = sessionsByExercise(ds.sets);
     const lp = byEx.get('leg press')!;
     // first session at each gym is never a PR; 460 > 450 at the vacation gym is
-    expect(lp.filter(s => s.isPR).map(s => `${s.gym} ${s.date}`)).toEqual(['Home gym 2026-10-09', 'Vacation gym 2026-10-16']);
+    expect(lp.filter(s => s.isPR).map(s => `${s.gym} ${s.date}`)).toEqual(['Training Station 2026-10-09', 'Vacation gym 2026-10-16']);
   });
   it('conversion factor from the nearest all-out main-gym session (within 14 days)', () => {
     const byEx = sessionsByExercise(ds.sets);
-    const f = gymFactors(byEx, {}, 'Home gym');
+    const f = gymFactors(byEx, {}, 'Training Station');
     const v = f.get('leg press|Vacation gym')!;
     // 10/13 vac 450x15 pairs with 10/9 home 455x9; 10/16 vac 460x15 pairs with 10/9 home → median of the two ratios
     const home9 = 455 * (1 + 9 / 30);
@@ -66,7 +66,7 @@ describe('gyms', () => {
     expect(f.get('leg press|Hotel gym')!.factor).toBeNull(); // only an RPE 6 set there
     const off = gymFactors(byEx, { 'leg press|Vacation gym': null }).get('leg press|Vacation gym')!;
     expect(off).toMatchObject({ factor: null, source: 'off' });
-    const unified = unifiedSessions(byEx.get('leg press')!, f, 'Home gym');
+    const unified = unifiedSessions(byEx.get('leg press')!, f, 'Training Station');
     expect(unified.filter(u => u.converted).map(u => u.gym)).toContain('Vacation gym');
   });
   it('a gym that starts later does not drag the score toward 0%', () => {
@@ -137,13 +137,13 @@ describe('config migration', () => {
     ];
     const m = migrateConfig(cfg);
     expect(m.config.corrections.map(x => x.cell)).toEqual(['L12', 'C3']);
-    expect(m.config.version).toBe(2);
+    expect(m.config.version).toBe(3);
     expect(m.changed).toContain('corrections');
     expect(migrateConfig(m.config).changed).toHaveLength(0);
   });
   it('older _config without a gyms row gets defaults', () => {
     const { config } = configFromRows([{ key: 'settings', value: '{"refreshMinutes":5}', updatedAt: 'x', device: '' }]);
-    expect(config.gyms.defaultGym).toBe('Home gym');
+    expect(config.gyms.defaultGym).toBe('Training Station');
     expect(config.settings.lossRateMinPct).toBe(0.5);
     expect(config.settings.weeklySetsMax).toBe(10);
   });

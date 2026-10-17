@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Line, Scatter, ReferenceLine, Area } from 'recharts';
+import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Line, Scatter, ReferenceLine, ReferenceArea, Area } from 'recharts';
 import { useSync, useRange, Tile, fmt, signed, shortDate, longDate, Empty, Section, TipBox, axisProps, dayTick, inRange, BandPill, StaleNote } from '../ui/common';
 import { movingAverage, bodyweightStats, weeklyAverages, toDay, fromDay, lossBand } from '../core/bodyweight';
 import { setConfigKey } from '../sync/engine';
@@ -67,6 +67,9 @@ export default function Bodyweight() {
                     ...(p.band ? [{ label: 'target zone', value: `${p.band[0].toFixed(1)}–${p.band[1].toFixed(1)} lb`, color: 'var(--band-edge)' }] : []),
                   ]} />;
                 }} />
+                {chart.length > 1 && s.dataset.life.filter(l => (l.until ?? l.date) >= fromDay(chart[0].day) && l.date <= fromDay(chart.at(-1)!.day)).map((l, i) => l.until
+                  ? <ReferenceArea key={i} x1={Math.max(toDay(l.date), chart[0].day)} x2={Math.min(toDay(l.until), chart.at(-1)!.day)} fill="var(--life)" fillOpacity={1} stroke="none" label={{ value: l.text, position: 'insideTopLeft', fill: 'var(--ink-2)', fontSize: 10 }} />
+                  : <ReferenceLine key={i} x={toDay(l.date)} stroke="var(--life-edge)" strokeDasharray="3 3" label={{ value: l.text, position: 'insideTopLeft', fill: 'var(--ink-2)', fontSize: 10 }} />)}
                 <Area dataKey="band" stroke="var(--band-edge)" strokeDasharray="4 3" strokeWidth={1} fill="var(--band-fill)" isAnimationActive={false} activeDot={false} />
                 {showRaw && <Scatter dataKey="raw" fill="var(--raw-dot)" isAnimationActive={false} shape={(p: any) => <circle cx={p.cx} cy={p.cy} r={3.5} fill="var(--raw-dot)" />} />}
                 <Line dataKey="ma" stroke="var(--series-1)" strokeWidth={3} dot={false} activeDot={{ r: 5, stroke: 'var(--surface)', strokeWidth: 2 }} isAnimationActive={false} strokeLinecap="round" strokeLinejoin="round" />

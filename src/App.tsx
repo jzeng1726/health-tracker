@@ -3,6 +3,8 @@ import { RangeCtx, RangePicker, useSync, type Range } from './ui/common';
 import { connect, sync, chooseFolder, installUpdate } from './sync/engine';
 import Dashboard from './pages/Dashboard';
 import Prep from './pages/Prep';
+import Gyms from './pages/Gyms';
+import Log from './pages/Log';
 import Bodyweight from './pages/Bodyweight';
 import Strength from './pages/Strength';
 import Endurance from './pages/Endurance';
@@ -11,12 +13,14 @@ import Review from './pages/Review';
 import Settings from './pages/Settings';
 import { CredentialsPanel } from './ui/Credentials';
 
-export type Page = 'dashboard' | 'prep' | 'bodyweight' | 'strength' | 'endurance' | 'quick' | 'review' | 'settings';
+export type Page = 'dashboard' | 'prep' | 'gyms' | 'log' | 'bodyweight' | 'strength' | 'endurance' | 'quick' | 'review' | 'settings';
 const PAGES: { id: Page; label: string; icon: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
   { id: 'prep', label: 'Gym prep', icon: 'M6.5 6.5v11M17.5 6.5v11M3 9.5v5M21 9.5v5M6.5 12h11' },
   { id: 'bodyweight', label: 'Bodyweight', icon: 'M4 20h16M6 20l2-12h8l2 12M12 8V5M9.5 12.5 12 11' },
   { id: 'strength', label: 'Strength', icon: 'M3 17l6-6 4 4 8-8M15 7h6v6' },
+  { id: 'gyms', label: 'Gyms', icon: 'M3 21V9l9-6 9 6v12M9 21v-6h6v6M3 21h18' },
+  { id: 'log', label: 'Log & calendar', icon: 'M4 5h16v16H4zM4 9h16M8 3v4M16 3v4M8 13h3M8 17h6' },
   { id: 'endurance', label: 'Endurance', icon: 'M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 9v4l2.5 2.5M9.5 2.5h5' },
   { id: 'quick', label: 'Quick Entry', icon: 'M12 5v14M5 12h14' },
   { id: 'review', label: 'Review', icon: 'M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9' },
@@ -68,7 +72,7 @@ export default function App() {
   if (s.auth === 'disconnected' && !hasData) return <Setup />;
 
   const title = PAGES.find(p => p.id === page)?.label;
-  const showRange = page !== 'quick' && page !== 'settings' && page !== 'review' && page !== 'prep';
+  const showRange = page !== 'quick' && page !== 'settings' && page !== 'review' && page !== 'prep' && page !== 'log';
 
   return (
     <RangeCtx.Provider value={rangeCtx}>
@@ -102,6 +106,8 @@ export default function App() {
           <div className={`content ${s.syncing ? 'dim' : ''}`}>
             {page === 'dashboard' && <Dashboard go={setPage} />}
             {page === 'prep' && <Prep go={setPage} />}
+            {page === 'gyms' && <Gyms go={setPage} />}
+            {page === 'log' && <Log />}
             {page === 'bodyweight' && <Bodyweight />}
             {page === 'strength' && <Strength go={setPage} />}
             {page === 'endurance' && <Endurance go={setPage} />}

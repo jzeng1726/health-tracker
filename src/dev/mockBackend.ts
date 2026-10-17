@@ -13,6 +13,7 @@ const week01 = fx('fb-week-01.json');
 const weeks24 = fx('fb-weeks-2-4.json');
 const weeks57 = fx('fb-weeks-5-7.json');
 const vacation = fx('vacation.json');
+const trainingLog = fx('training-log.json');
 
 interface MockTab { title: string; sheetId: number; hidden?: boolean; rows: SheetCell[][] }
 interface MockFile { id: string; name: string; modifiedTime: string; owner: string; shortcut?: string; tabs: MockTab[] }
@@ -26,6 +27,7 @@ if (week01) add(week01, '2026-08-27T21:53:07.194Z', 'coach@example.com', 'sc-1')
 if (weeks24) add(weeks24, '2026-10-07T02:45:17.383Z', 'coach@example.com', 'sc-2');
 if (weeks57) add(weeks57, '2026-10-11T16:20:12.581Z', 'you@example.com');
 if (vacation) add(vacation, '2026-10-17T03:43:06.800Z', 'you@example.com');
+if (trainingLog) add(trainingLog, '2026-10-17T16:22:17.857Z', 'you@example.com');
 
 const cache = new Map<string, string>();
 let seq = 1;
@@ -67,7 +69,7 @@ export function mockBackend(): Backend {
     cachePut: async (k, v) => { cache.set(k, v); },
     cacheClear: async () => cache.clear(),
     deviceName: async () => 'Browser preview',
-    appVersion: async () => '0.1.4-dev',
+    appVersion: async () => '0.1.5-dev',
     checkUpdate: async () => ({ available: false }),
     credentialsInfo: async () => ({ source: 'mock', client_id_end: 'mock', secret: 'n/a' }),
     setClientCredentials: async () => ({ source: 'saved in this app', client_id_end: 'mock', secret: 'n/a' }),
@@ -96,6 +98,17 @@ export function mockBackend(): Backend {
       if (m && method === 'GET') {
         const f = files.get(m[1])!;
         return { sheets: f.tabs.map(t => ({ properties: { sheetId: t.sheetId, title: t.title, hidden: !!t.hidden }, data: [{ rowData: t.rows.map(r => ({ values: r.map(toApi) })) }] })) };
+      }
+      m = p.match(/^\/v4\/spreadsheets\/([^/:]+)\/values:batchUpdate$/);
+      if (m) {
+        const f = files.get(m[1])!;
+        for (const d of body.data) {
+          const rg = parseRange(d.range);
+          const tab = f.tabs.find(t => t.title === rg.tab)!;
+          (d.values as any[][]).forEach((vals, i) => { while (tab.rows.length <= rg.r0 + i) tab.rows.push([]); vals.forEach((v, j) => { tab.rows[rg.r0 + i][rg.c0 + j] = writeCell(v, true); }); });
+        }
+        bump(f);
+        return {};
       }
       m = p.match(/^\/v4\/spreadsheets\/([^/:]+):batchUpdate$/);
       if (m) {

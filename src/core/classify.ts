@@ -25,6 +25,8 @@ export function headerRole(text: string, rowHasExercise: boolean): { role: Colum
   if (/sets?\s*[x×\/]\s*reps?/.test(t)) return { role: 'setsxreps' };
   if (/^(muscle|muscles|muscle group|muscle groups|body ?part|target( muscle)?|group)\b/.test(t)) return { role: 'muscle' };
   if (/^(gym|location|place|where|facility)\b/.test(t)) return { role: 'gym' };
+  if (/^(until|end date|end|through|thru|to date)\b/.test(t)) return { role: 'until' };
+  if (/^(life note|life|event|what happened)\b/.test(t)) return { role: 'notes' };
   if (/^(rpe|rir|effort|intensity|reps in reserve)\b/.test(t)) return { role: 'rpe', unit: /rir|reserve/.test(t) ? 'rir' : 'rpe' };
   if (IGNORE_RX.test(t) && !/^date/.test(t)) return { role: 'ignore' };
   if (/^(date|day|when)\b/.test(t)) return { role: 'date' };
@@ -74,8 +76,10 @@ export function headerMappingForRow(row: SheetCell[]): Omit<ColumnMapping, 'head
     }
   });
   if (found < 2) return null;
+  // "Date | Until | Note" (Life Log) has only date + notes roles that count
   if (columns.exercise != null && columns.date != null) return { type: 'workout', columns, timeUnit, distanceUnit, ...(rpeUnit ? { rpeUnit } : {}) };
   if (columns.exercise == null && columns.date != null && columns.bodyweight != null) return { type: 'bodyweight', columns };
+  if (columns.exercise == null && columns.date != null && columns.notes != null && columns.bodyweight == null && columns.weight == null) return { type: 'life', columns };
   return null;
 }
 
@@ -94,7 +98,7 @@ export function classifyTab(tab: SheetTab, fileName: string, override?: ColumnMa
   if (/^_config\b/i.test(fileName.trim())) return { kind: 'config', reason: 'app settings file' };
   if (override) {
     if (override.type === 'ignore') return { kind: 'empty', reason: 'ignored by you' };
-    return { kind: override.type === 'bodyweight' ? 'bodyweight' : 'workout-log', reason: 'your column mapping', mapping: override };
+    return { kind: override.type === 'bodyweight' ? 'bodyweight' : override.type === 'life' ? 'life-log' : 'workout-log', reason: 'your column mapping', mapping: override };
   }
   const nonEmpty = tab.rows.some(r => r.some(c => cellText(c)));
   if (!nonEmpty) return { kind: 'empty', reason: 'no data' };
@@ -105,7 +109,7 @@ export function classifyTab(tab: SheetTab, fileName: string, override?: ColumnMa
       return { kind: 'derived', reason: 'values are formula output copied from another tab — skipped so nothing is counted twice' };
     }
     return {
-      kind: mapping.type === 'bodyweight' ? 'bodyweight' : 'workout-log',
+      kind: mapping.type === 'bodyweight' ? 'bodyweight' : mapping.type === 'life' ? 'life-log' : 'workout-log',
       reason: `headers on row ${mapping.headerRow + 1}: ${Object.entries(mapping.columns).map(([k, v]) => `${k}=${cellText(tab.rows[mapping.headerRow][v!])}`).join(', ')}`,
       mapping,
     };

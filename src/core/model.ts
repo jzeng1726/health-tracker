@@ -1,5 +1,6 @@
 import type { SheetCell } from './time';
 import type { Muscle, ExerciseKind, EnduranceType, Confidence } from './muscles';
+import type { NoteTag, LifeTag } from './notes';
 
 export interface SheetTab { title: string; sheetId?: number; hidden?: boolean; rows: SheetCell[][] }
 export interface SheetFile {
@@ -12,7 +13,7 @@ export interface SheetFile {
   tabs: SheetTab[];
 }
 
-export type TabKind = 'bodyweight' | 'program-grid' | 'workout-log' | 'derived' | 'empty' | 'config' | 'duplicate' | 'unknown';
+export type TabKind = 'bodyweight' | 'program-grid' | 'workout-log' | 'life-log' | 'derived' | 'empty' | 'config' | 'duplicate' | 'unknown';
 
 export interface BodyweightEntry { date: string; weight: number; fileId: string; ref: string }
 
@@ -111,6 +112,14 @@ export interface Dataset {
   programs: Program[];
   /** gym names seen in the data (default first) */
   gyms: string[];
+  /** every note written next to a set, with what the app read from it */
+  notes: NoteEntry[];
+  /** life notes from the Life Log tab */
+  life: LifeEntry[];
+  /** "exercise|gym" -> dates where a note says the setup changed (new baseline from that session) */
+  changes: Record<string, string[]>;
+  /** exercise-name cells in sheets you own whose text differs from the cleaned name */
+  nameFixes: NameFix[];
   /** automatic mappings to persist into _config.autoMappings */
   autoMappings: Record<string, { primary: Muscle | null; secondary: Muscle[]; kind: ExerciseKind; confidence: string; rule: string; confirmed: boolean }>;
 }
@@ -131,3 +140,17 @@ export interface ProgramBlock {
   logged: number;         // items with a result
 }
 export interface Program { fileId: string; fileName: string; modifiedTime: string; blocks: ProgramBlock[] }
+
+export interface NoteEntry {
+  date: string;
+  exercise: string;      // canonical
+  gym: string;
+  text: string;          // exactly as written
+  tags: NoteTag[];
+  setupChange: boolean;
+  ref: string;
+  key: string;
+  set?: string;          // "95 × 7"
+}
+export interface LifeEntry { date: string; until?: string; text: string; tags: LifeTag[]; ref: string }
+export interface NameFix { fileId: string; fileName: string; tab: string; row: number; col: number; from: string; to: string }

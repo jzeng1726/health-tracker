@@ -17,7 +17,7 @@ export default function Dashboard({ go }: { go: (p: Page) => void }) {
     const maIn = ma.filter(p => inRange(p.date, bounds));
     const bw = bodyweightStats(ma, bounds.start, s.config.goals.goalWeightLb);
     const byEx = sessionsByExercise(ds.sets);
-    const scores = muscleScores(byEx, ds.exercises, bounds.start, bounds.end ?? undefined);
+    const scores = muscleScores(byEx, ds.exercises, bounds.start, bounds.end ?? undefined, ds.changes);
     const endS = enduranceSessions(ds.endurance, settings.carryWeightPerHand);
     const weeks = enduranceWeekly(endS.filter(x => x.type === 'run'));
     const thisWeek = mondayOf(todayISO());
@@ -31,7 +31,7 @@ export default function Dashboard({ go }: { go: (p: Page) => void }) {
       const w = mondayOf(x.date);
       workoutsPerWeek.set(w, (workoutsPerWeek.get(w) ?? new Set()).add(x.date));
     }
-    const plateaus = findPlateaus(byEx, todayISO());
+    const plateaus = findPlateaus(byEx, todayISO(), 3, ds.changes);
     const prog = currentProgram(ds.programs);
     const next = prog ? dayOptions(prog)[0] ?? null : null;
     return { ma, maIn, bw, scores, weeks, runThisWeek, sessionDays, prs, workoutsPerWeek, plateaus, prog, next };
@@ -94,7 +94,7 @@ export default function Dashboard({ go }: { go: (p: Page) => void }) {
             <tbody>
               {d.prs.map((p, i) => (
                 <tr key={i} className="clickable" onClick={() => go(p.tab)}>
-                  <td>{shortDate(p.date)}</td><td>{p.display}{'gym' in p && p.gym && p.gym !== (s.config.gyms.defaultGym || 'Home gym') && <> <span className="pill gym">{p.gym}</span></>}</td><td><span className="pill pr">{p.kind}</span></td><td className="n">{p.value}</td><td className="hint">{p.detail}</td>
+                  <td>{shortDate(p.date)}</td><td>{p.display}{'gym' in p && p.gym && p.gym !== (s.config.gyms.defaultGym || 'Training Station') && <> <span className="pill gym">{p.gym}</span></>}</td><td><span className="pill pr">{p.kind}</span></td><td className="n">{p.value}</td><td className="hint">{p.detail}</td>
                 </tr>
               ))}
             </tbody>

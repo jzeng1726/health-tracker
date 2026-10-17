@@ -155,7 +155,20 @@ The same lift on a different gym's machine is a different scale (gym B's lat pul
 - **Automatic conversion:** when you've done an exercise at two gyms within 14 days, the app pairs the all-out sets (RPE 8–10, which is assumed unless you wrote a lower RPE) and learns a factor: *main-gym est. 1RM ÷ other-gym est. 1RM*. It's used to draw one line on the exercise chart (open dots = converted) and to estimate a starting weight in Gym prep. Settings → *Gym conversions* shows each factor and how it was worked out; you can set your own or turn it off.
 - **RPE is optional.** Add an `RPE` (or `RIR`) column, write `@9` after a set, or pick it in Quick Entry.
 
-## 6c. Gym prep, targets and alerts
+## 6c. Notes, life log and calendar
+
+- **Notes next to a set** (in Quick Entry's note box, a Notes column, text after the numbers like `140x7 (no straps)`, or a line under the exercise in a coach sheet like `1 Higher pad position`) are read on every refresh. Three checks: setup-change phrases (grip, straps, seat/pad/pin position, different machine, form/tempo, belt/wraps), limits that aren't a change (grip gave out, tired, pain, lost count), and "same / no change" wording that cancels a match.
+- **A setup change starts a new baseline** for that exercise at that gym: progress up to that day is kept, and the new setup is measured from there — so a lighter weight right after "changed my grip" is not counted as getting weaker, isn't flagged as a typo, and resets plateau detection.
+- **Life notes** ("Going on vacation", "Sick this week") go to a *Life Log* tab in your Training Log (Date · Until · Note). They show on the calendar and as shaded spans on the bodyweight chart. You can also type them straight into that tab.
+- **Log & calendar** shows every exercise note, life note and PR by date; click a day for details.
+
+## 6d. Names
+
+- Every exercise is shown with capitals and typos fixed (`Rope pushdown` → `Rope Pushdown`, `latpulldown` → `Lat Pulldown`, `Laying` → `Lying`, `Situps` → `Sit-Ups`).
+- **Sheets you own** get the same fix written into the exercise-name cell on refresh (Settings → *Exercise names* turns it off). Only that cell changes; your coach's sheets are never edited.
+- Renamed and merged (v0.1.5): Recline Curl → **Tricep Supported Curls**, Strict Alternating Hammer Curl → **Tricep Supported Alternating Hammer Curls**, T-Bar (Wide Grip) → **Narrow Grip T-Bar Row**. Home gym → **Training Station**; **Firehouse Gym** added. The **Gyms** page shows progress for Training Station, Firehouse Gym and Overall (all gyms, Vacation included).
+
+## 6e. Gym prep, targets and alerts
 
 - **Gym prep** picks the next unlogged A/B day from your newest coach sheet (or repeats your last session at the gym you pick). For each exercise: last time *at that gym*, today's target by double progression (reach the top of the rep range → add 5 lb, 2.5 under 40 lb), and the set that would be a PR.
 - **Strength ÷ bodyweight:** est. 1RM ÷ 7-day average bodyweight that day (column "× BW" and a chart per exercise).
@@ -175,7 +188,7 @@ While the app's OAuth consent screen is in **Testing** mode, Google expires the 
 ## 8. Updating the app
 
 - **Installed apps update themselves.** On launch they check GitHub Releases. When a new version exists, a banner offers **Install & restart**. Settings → *Check for updates* checks on demand.
-- **To publish a new version:** bump `"version"` in `package.json` (e.g. `0.1.4` → `0.1.5`) and commit to `main`. The build starts by itself whenever `package.json` changes (you can also run **Actions → Build installers → Run workflow**). About 15 minutes later the release is up and both computers offer the update.
+- **To publish a new version:** bump `"version"` in `package.json` (e.g. `0.1.5` → `0.1.6`) and commit to `main`. The build starts by itself whenever `package.json` changes (you can also run **Actions → Build installers → Run workflow**). About 15 minutes later the release is up and both computers offer the update.
 
 ---
 
