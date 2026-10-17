@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Line, Scatter, ReferenceLine } from 'recharts';
-import { useSync, useRange, Tile, fmt, signed, shortDate, longDate, Empty, Section, TipBox, axisProps, dayTick, inRange } from '../ui/common';
-import { movingAverage, bodyweightStats, weeklyAverages, toDay, fromDay } from '../core/bodyweight';
+import { ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis, Tooltip, Line, Scatter, ReferenceLine, Area } from 'recharts';
+import { useSync, useRange, Tile, fmt, signed, shortDate, longDate, Empty, Section, TipBox, axisProps, dayTick, inRange, BandPill, StaleNote } from '../ui/common';
+import { movingAverage, bodyweightStats, weeklyAverages, toDay, fromDay, lossBand } from '../core/bodyweight';
 import { setConfigKey } from '../sync/engine';
 
 const loadRaw = () => { try { return localStorage.getItem('bw.raw') !== '0'; } catch { return true; } };
@@ -23,26 +23,30 @@ export default function Bodyweight() {
     return <Empty title="No weigh-ins found">Add a sheet with <b>Date</b> and <b>Morning Weight</b> columns to the Health Tracker folder, or log one in Quick Entry.</Empty>;
   }
   const st = d.stats;
-  const chart = d.pts.map(p => ({ day: toDay(p.date), ma: Number(p.ma.toFixed(2)), raw: p.raw, partial: p.partial, n: p.n }));
+  const { lossRateMinPct: bMin, lossRateMaxPct: bMax } = s.config.settings;
+  const band = d.pts.length ? lossBand(d.pts[0].ma, toDay(d.pts[0].date), d.pts.map(p => toDay(p.date)), bMin, bMax) : [];
+  const chart = d.pts.map((p, i) => ({ day: toDay(p.date), ma: Number(p.ma.toFixed(2)), raw: p.raw, partial: p.partial, n: p.n, band: band[i] ? [band[i].lo, band[i].hi] : undefined }));
   const toggleRaw = () => { const v = !showRaw; setShowRaw(v); try { localStorage.setItem('bw.raw', v ? '1' : '0'); } catch { /* ignore */ } };
-  const ys = chart.flatMap(c => (showRaw ? [c.ma, c.raw] : [c.ma])).concat(goal != null && st.current != null && st.current - goal < 8 ? [goal] : []);
+  const ys = chart.flatMap(c => (showRaw ? [c.ma, c.raw] : [c.ma])).concat(goal != null && st.current != null && st.current - goal < 8 ? [goal] : []).concat(band.length ? [band.at(-1)!.lo] : []);
 
   return (
     <>
+      <StaleNote stats={st} />
       <div className="grid cards">
-        <Tile label="Current weight · 7-day average" value={fmt(st.current, 1)} unit="lb" foot={st.currentPartial ? <span className="pill low">partial average (first 6 days of the sheet)</span> : st.lastDate && `through ${shortDate(st.lastDate)}`} />
+        <Tile label="Current weight · 7-day average" value={fmt(st.current, 1)} unit="lb" foot={st.currentPartial ? <span className="pill low">partial average (first 6 days of the sheet)</span> : st.lastDate && <>through {shortDate(st.lastDate)}{st.currentN < 4 && <span className="pill low">from {st.currentN} weigh-in{st.currentN === 1 ? '' : 's'}</span>}</>} />
         <Tile label="Total lost" value={fmt(st.totalLost, 1)} unit="lb" foot={st.startDate && `from ${fmt(st.start)} lb (7-day avg on ${shortDate(st.startDate)})`} />
         <Tile label="Bodyweight lost" value={st.pctLost == null ? '—' : (st.pctLost * 100).toFixed(2)} unit="%" />
-        <Tile label="Weekly loss rate" value={fmt(st.weeklyRate, 2)} unit="lb/wk" foot={st.weeklyRatePct != null ? `${(st.weeklyRatePct * 100).toFixed(2)}% BW/week` : 'needs a 7-day average from a week earlier'} />
+        <Tile label="Weekly loss rate" value={fmt(st.weeklyRate, 2)} unit="lb/wk" foot={st.weeklyRatePct != null ? <>{(st.weeklyRatePct * 100).toFixed(2)}% BW/week <BandPill pct={st.weeklyRatePct} min={bMin} max={bMax} /></> : 'needs a 7-day average from a week earlier'} />
       </div>
 
-      <Section title="7-day moving average" sub="Bold line = 7-day average (all stats use it). Dots = daily weigh-ins."
+      <Section title="7-day moving average" sub={`Bold line = 7-day average (all stats use it). Dots = daily weigh-ins. Shaded = target zone, ${bMin}–${bMax}% of bodyweight per week from the start of the range.`}
         right={<label className="toggle"><input type="checkbox" checked={showRaw} onChange={toggleRaw} />Show daily weigh-ins</label>} />
       <div className="card">
-        {showRaw && (
+        {(
           <div className="legend" style={{ marginBottom: 6 }}>
             <span className="k"><span className="line" />7-day average</span>
-            <span className="k"><span className="dotk" />Daily weigh-in</span>
+            {showRaw && <span className="k"><span className="dotk" />Daily weigh-in</span>}
+            <span className="k"><span className="bandk" />Target zone {bMin}–{bMax}%/wk</span>
             {goal != null && <span className="k"><span className="line" style={{ background: 'var(--muted)' }} />Goal {goal} lb</span>}
           </div>
         )}
@@ -58,10 +62,12 @@ export default function Bodyweight() {
                   if (!active || !payload?.length) return null;
                   const p = payload[0].payload;
                   return <TipBox title={longDate(fromDay(p.day))} rows={[
-                    { label: p.partial ? `7-day avg (partial, ${p.n} day${p.n > 1 ? 's' : ''})` : '7-day average', value: `${p.ma.toFixed(1)} lb`, color: 'var(--series-1)' },
+                    { label: p.partial ? `7-day avg (partial, ${p.n} day${p.n > 1 ? 's' : ''})` : p.n < 4 ? `7-day avg (only ${p.n} weigh-in${p.n > 1 ? 's' : ''})` : '7-day average', value: `${p.ma.toFixed(1)} lb`, color: 'var(--series-1)' },
                     { label: 'weigh-in', value: `${p.raw} lb`, color: 'var(--raw-dot)', dot: true },
+                    ...(p.band ? [{ label: 'target zone', value: `${p.band[0].toFixed(1)}–${p.band[1].toFixed(1)} lb`, color: 'var(--band-edge)' }] : []),
                   ]} />;
                 }} />
+                <Area dataKey="band" stroke="var(--band-edge)" strokeDasharray="4 3" strokeWidth={1} fill="var(--band-fill)" isAnimationActive={false} activeDot={false} />
                 {showRaw && <Scatter dataKey="raw" fill="var(--raw-dot)" isAnimationActive={false} shape={(p: any) => <circle cx={p.cx} cy={p.cy} r={3.5} fill="var(--raw-dot)" />} />}
                 <Line dataKey="ma" stroke="var(--series-1)" strokeWidth={3} dot={false} activeDot={{ r: 5, stroke: 'var(--surface)', strokeWidth: 2 }} isAnimationActive={false} strokeLinecap="round" strokeLinejoin="round" />
               </ComposedChart>

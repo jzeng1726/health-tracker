@@ -46,6 +46,8 @@ export interface BodyweightStats {
   projectedDate: string | null;
   projectionNote: string;
   lastDate: string | null;
+  /** weigh-ins inside the latest 7-day window (fewer than 4 = shaky average) */
+  currentN: number;
 }
 
 /** Linear-regression slope (lb/day) of the MA over the last `days` days. */
@@ -74,7 +76,7 @@ export function bodyweightStats(all: MAPoint[], rangeStart: string | null, goal?
   const pts = rangeStart ? all.filter(p => p.date >= rangeStart) : all;
   const empty: BodyweightStats = {
     current: null, currentPartial: false, start: null, startDate: null, totalLost: null, pctLost: null,
-    weeklyRate: null, weeklyRatePct: null, goal, projectedDate: null, projectionNote: 'No weigh-ins yet', lastDate: null,
+    weeklyRate: null, weeklyRatePct: null, goal, projectedDate: null, projectionNote: 'No weigh-ins yet', lastDate: null, currentN: 0,
   };
   if (!pts.length) return empty;
   const last = pts[pts.length - 1];
@@ -97,7 +99,7 @@ export function bodyweightStats(all: MAPoint[], rangeStart: string | null, goal?
     current: last.ma, currentPartial: last.partial, start: first.ma, startDate: first.date,
     totalLost: first.ma - last.ma, pctLost: (first.ma - last.ma) / first.ma,
     weeklyRate, weeklyRatePct: weekAgo && weeklyRate != null ? weeklyRate / weekAgo.ma : null,
-    goal, projectedDate, projectionNote, lastDate: last.date,
+    goal, projectedDate, projectionNote, lastDate: last.date, currentN: last.n,
   };
 }
 
@@ -120,4 +122,25 @@ export function weeklyAverages(entries: BodyweightEntry[]): WeekRow[] {
     prev = avg;
     return row;
   });
+}
+
+/**
+ * Target loss zone: from the 7-day average at `start`, losing between minPct and maxPct of
+ * bodyweight per week (compounded). Returns the zone's top/bottom for each day number given.
+ */
+export function lossBand(startMa: number, startDay: number, days: number[], minPct: number, maxPct: number): { day: number; hi: number; lo: number }[] {
+  return days.map(d => {
+    const weeks = Math.max(0, d - startDay) / 7;
+    return { day: d, hi: startMa * Math.pow(1 - minPct / 100, weeks), lo: startMa * Math.pow(1 - maxPct / 100, weeks) };
+  });
+}
+
+export type BandStatus = 'in' | 'slow' | 'fast' | 'gaining' | 'unknown';
+export function bandStatus(weeklyRatePct: number | null, minPct: number, maxPct: number): BandStatus {
+  if (weeklyRatePct == null) return 'unknown';
+  const p = weeklyRatePct * 100;
+  if (p < 0) return 'gaining';
+  if (p < minPct) return 'slow';
+  if (p > maxPct) return 'fast';
+  return 'in';
 }

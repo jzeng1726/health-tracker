@@ -5,13 +5,13 @@
  */
 import type { SheetCell } from './time';
 import { parseDurationCell, parseDistance, formatDuration } from './time';
-import { fnv1a, type AppConfig, type ColumnMapping } from './config';
+import { fnv1a, type AppConfig, type ColumnMapping, type Correction } from './config';
 import type {
-  BodyweightEntry, Dataset, EnduranceEntry, ExerciseInfo, ReviewItem, SheetFile, SheetTab, StrengthSet, FileSummary,
+  BodyweightEntry, Dataset, EnduranceEntry, ExerciseInfo, ReviewItem, SheetFile, SheetTab, StrengthSet, FileSummary, Program, ProgramBlock,
 } from './model';
 import { classifyTab, headerMappingForRow, cellNumber } from './classify';
-import { parseGrid, cellText, cellDate, colName } from './grid';
-import { detectMuscles, normalizeExerciseName, suggestMerges, type MuscleMapping } from './muscles';
+import { parseGrid, cellText, cellDate, colName, isProgramGrid, type GridEntry } from './grid';
+import { detectMuscles, normalizeExerciseName, suggestMerges, withSheetMuscle, wordSetKey, type MuscleMapping } from './muscles';
 import { parseEntryResult, type ParsedSet } from './results';
 
 export const a1 = (r: number, c: number) => `${colName(c)}${r + 1}`;
@@ -23,15 +23,20 @@ export function parseA1(ref: string): { r: number; c: number } | null {
   return { r: Number(m[2]) - 1, c: c - 1 };
 }
 
-function applyCorrections(file: SheetFile, tab: SheetTab, config: AppConfig): { rows: SheetCell[][]; corrected: Map<string, string> } {
+function applyCorrections(file: SheetFile, tab: SheetTab, config: AppConfig, orphans: Correction[]): { rows: SheetCell[][]; corrected: Map<string, string> } {
   const corrected = new Map<string, string>();
   const idHash = fnv1a(file.id);
-  const list = config.corrections.filter(c => (c.sheetId === file.id || c.sheetIdHash === idHash) && (!c.tab || c.tab === tab.title));
+  const direct = config.corrections.filter(c => (c.sheetId === file.id || c.sheetIdHash === idHash) && (!c.tab || c.tab === tab.title));
+  // corrections made on a copy that's since been deleted still apply to the sheet that has the same text in the same cell
+  const cells = new Set(direct.map(c => c.cell.toUpperCase()));
+  const fallback = orphans.filter(c => !cells.has(c.cell.toUpperCase()) && (!c.tab || c.tab === tab.title));
+  const list = [...direct, ...fallback];
   if (!list.length) return { rows: tab.rows, corrected };
   const rows = tab.rows.map(r => r.slice());
   for (const c of list) {
     const p = parseA1(c.cell);
     if (!p) continue;
+    if (corrected.has(c.cell.toUpperCase())) continue;
     const current = cellText(rows[p.r]?.[p.c]);
     // only apply while the sheet still holds the value the correction was made for
     if (current !== c.from.trim()) continue;
@@ -40,6 +45,38 @@ function applyCorrections(file: SheetFile, tab: SheetTab, config: AppConfig): { 
     corrected.set(c.cell.toUpperCase(), c.from);
   }
   return { rows, corrected };
+}
+
+/** Default gym for a sheet: your Settings choice, else "Vacation gym" for vacation/travel sheets, else your main gym. */
+export function gymForFile(file: { id: string; name: string }, config: AppConfig): string {
+  const g = config.gyms ?? { defaultGym: 'Home gym', bySheet: {} as Record<string, string> };
+  return g.bySheet?.[file.id] ?? (/\b(vacation|travel|trip|hotel|away|visiting)\b/i.test(file.name) ? 'Vacation gym' : g.defaultGym || 'Home gym');
+}
+
+/** Logged-result cells of a file ("C15=130x9"), used to spot copies of the same sheet. Planned prescriptions don't count. */
+function resultFingerprint(file: SheetFile): Set<string> {
+  const out = new Set<string>();
+  for (const t of file.tabs) {
+    if (isProgramGrid(t.rows)) {
+      for (const e of parseGrid({ id: file.id, title: file.name, tab: t.title, modifiedYear: 2000, rows: t.rows })) if (e.resultText) out.add(`${a1(e.row, e.col)}=${e.resultText}`);
+    } else if (detectHeaderRowSafe(t)) {
+      t.rows.forEach((row, r) => { const x = row.map(c => cellText(c)).join('|'); if (/\d/.test(x)) out.add(`${r}=${x}`); });
+    }
+  }
+  return out;
+}
+
+/** fileId -> the file it duplicates (≥80% of its logged cells are identical). The fuller / newer copy is kept. */
+export function findDuplicates(files: SheetFile[]): Map<string, string> {
+  const fps = files.map(f => ({ f, fp: resultFingerprint(f) })).filter(x => x.fp.size >= 5)
+    .sort((a, b) => b.fp.size - a.fp.size || b.f.modifiedTime.localeCompare(a.f.modifiedTime));
+  const kept: typeof fps = [];
+  const dup = new Map<string, string>();
+  for (const x of fps) {
+    const of = kept.find(k => { let same = 0; for (const v of x.fp) if (k.fp.has(v)) same++; return same / x.fp.size >= 0.8; });
+    if (of) dup.set(x.f.id, of.f.id); else kept.push(x);
+  }
+  return dup;
 }
 
 function resolveCanonical(norm: string, merges: Record<string, string>): string {
@@ -73,21 +110,28 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
   const endurance: EnduranceEntry[] = [];
   const review: ReviewItem[] = [];
   const fileSummaries: FileSummary[] = [];
+  const programs: Program[] = [];
   const rawNames = new Map<string, Map<string, number>>(); // canonical -> raw -> count
+  const sheetMuscle = new Map<string, string>();            // canonical -> muscle named by the sheet
   const ignored = new Set(config.ignored);
   const addReview = (item: ReviewItem) => { if (!ignored.has(item.id)) review.push(item); };
+  const gymsSeen = new Set<string>([config.gyms?.defaultGym || 'Home gym', ...(config.gyms?.names ?? [])]);
 
-  const mappingCache = new Map<string, ExerciseInfo>();
+  const present = new Set(files.map(f => f.id));
+  const presentHash = new Set(files.map(f => fnv1a(f.id)));
+  const orphans = config.corrections.filter(c => (c.sheetId ? !present.has(c.sheetId) : !!c.sheetIdHash && !presentHash.has(c.sheetIdHash)));
+  const duplicates = findDuplicates(files.filter(f => f.tabs.some(t => isProgramGrid(t.rows) || detectHeaderRowSafe(t))));
+
   const mappingFor = (canonical: string): { m: MuscleMapping; confirmed: boolean } => {
     const o = config.exerciseOverrides[canonical];
+    const auto = withSheetMuscle(detectMuscles(canonical), sheetMuscle.get(canonical));
     if (o?.confirmed) {
-      const auto = detectMuscles(canonical);
       return {
         m: { ...auto, primary: o.primary, secondary: o.secondary, kind: o.kind ?? auto.kind, enduranceType: o.enduranceType ?? auto.enduranceType, bodyweight: o.bodyweight ?? auto.bodyweight, confidence: 'high', source: 'user', rule: 'your edit', reason: 'confirmed by you' },
         confirmed: true,
       };
     }
-    return { m: detectMuscles(canonical), confirmed: false };
+    return { m: auto, confirmed: false };
   };
   const seen = (canonical: string, raw: string) => {
     const m = rawNames.get(canonical) ?? new Map();
@@ -96,8 +140,8 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
   };
 
   const pushParsed = (
-    p: { sets: ParsedSet[]; note?: string }, canonical: string, m: MuscleMapping,
-    base: { key: string; ref: string; fileId: string; date: string; raw: string },
+    p: { sets: ParsedSet[]; note?: string; rpe?: number }, canonical: string, m: MuscleMapping,
+    base: { key: string; ref: string; fileId: string; date: string; raw: string; gym: string },
     extra: { distanceM?: number | null } = {},
   ) => {
     const isEndurance = m.kind !== 'strength' || p.sets.some(s => s.seconds != null);
@@ -113,7 +157,7 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
           perSide: s.perSide, round: s.round, note: p.note,
         });
       } else if (s.reps != null) {
-        sets.push({ ...base, key, exercise: canonical, weight: s.weight, reps: s.reps, side: s.side, round: s.round, perSide: s.perSide, note: p.note });
+        sets.push({ ...base, key, exercise: canonical, weight: s.weight, reps: s.reps, side: s.side, round: s.round, perSide: s.perSide, note: p.note, rpe: p.rpe });
       }
     });
   };
@@ -121,12 +165,20 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
   for (const file of files) {
     const summary: FileSummary = { id: file.id, name: file.name, modifiedTime: file.modifiedTime, viaShortcut: file.viaShortcut, owner: file.owner, tabs: [] };
     fileSummaries.push(summary);
+    const dupOf = duplicates.get(file.id);
+    if (dupOf) {
+      const other = files.find(f => f.id === dupOf);
+      for (const tab of file.tabs) summary.tabs.push({ title: tab.title, kind: 'duplicate', reason: `same logged sets as "${other?.name ?? 'another sheet'}" — skipped so nothing counts twice`, rows: tab.rows.length });
+      continue;
+    }
+    const fileGym = gymForFile(file, config);
+    gymsSeen.add(fileGym);
     for (const tab of file.tabs) {
       const mapKey = `${file.id}:${tab.title}`;
       const cls = classifyTab(tab, file.name, config.columnMappings[mapKey]);
       summary.tabs.push({ title: tab.title, kind: cls.kind, reason: cls.reason, rows: tab.rows.length });
       if (tab.hidden && cls.kind !== 'config') continue;
-      const { rows, corrected } = applyCorrections(file, tab, config);
+      const { rows, corrected } = applyCorrections(file, tab, config, cls.kind === 'program-grid' || cls.kind === 'workout-log' ? orphans : []);
       const year = Number((file.modifiedTime || new Date().toISOString()).slice(0, 4));
       const refOf = (r: number, c: number) => `${file.name} › ${tab.title}!${a1(r, c)}${corrected.has(a1(r, c)) ? ' (corrected)' : ''}`;
       const keyOf = (r: number, c: number) => `${file.id}!${tab.title}!${a1(r, c)}`;
@@ -155,11 +207,18 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
 
       if (cls.kind === 'program-grid') {
         const entries = parseGrid({ id: file.id, title: file.name, tab: tab.title, modifiedYear: year, rows });
+        const blocks = new Map<string, ProgramBlock>();
+        const undatedByBlock = new Map<string, { keys: string[]; names: string[]; e: GridEntry }>();
         for (const e of entries) {
           const norm = normalizeExerciseName(e.exercise);
           if (!norm) continue;
           const canonical = resolveCanonical(norm, config.merges);
           seen(canonical, e.exercise);
+          const bk = `${e.block.headerRow}:${e.block.exCol}`;
+          const block = blocks.get(bk) ?? { dayLabel: e.dayLabel, headerRow: e.block.headerRow, exCol: e.block.exCol, date: null, items: [], logged: 0 };
+          block.items.push({ exercise: canonical, display: e.exercise.trim(), prescription: e.prescription, notes: e.extraNotes, result: e.resultText });
+          if (e.resultText) { block.logged++; block.date = block.date ?? fixYear(e.date, file.modifiedTime) ?? null; }
+          blocks.set(bk, block);
           if (!e.resultText) continue; // planned but not logged
           const key = keyOf(e.row, e.col);
           if (ignored.has(key)) continue;
@@ -169,7 +228,9 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
           const ref = refOf(e.row, e.col);
           if (parsed.skipped) continue;
           if (!date) {
-            addReview({ id: `undated:${key}`, kind: 'undated', title: `${e.exercise.trim()} — no date`, detail: `"${e.resultText}" has no session date in the sheet. Pick the day you did it.`, ref, key, raw: e.resultText, exercise: canonical });
+            const u = undatedByBlock.get(bk) ?? { keys: [], names: [], e };
+            u.keys.push(key); u.names.push(`${e.exercise.trim()} "${e.resultText}"`);
+            undatedByBlock.set(bk, u);
             continue;
           }
           const valueFlags = parsed.flags.filter(f => !/^bodyweight move/.test(f));
@@ -177,11 +238,21 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
             addReview({
               id: `value:${key}`, kind: 'value', title: `${e.exercise.trim()} · ${date}`, detail: valueFlags.join('; '),
               ref, key, fileId: file.id, tab: tab.title, cell: a1(e.row, e.col), raw: e.resultText,
-              suggestion: parsed.timeAmbiguous && parsed.guessSeconds != null ? formatDuration(parsed.guessSeconds) : undefined,
+              suggestion: parsed.timeAmbiguous && parsed.guessSeconds != null ? formatDuration(parsed.guessSeconds) : (parsed as any).suggestion,
             });
           }
-          pushParsed(parsed, canonical, m, { key, ref, fileId: file.id, date, raw: e.resultText });
+          pushParsed(parsed, canonical, m, { key, ref, fileId: file.id, date, raw: e.resultText, gym: fileGym });
         }
+        // one date picker per block instead of one per exercise
+        for (const [, u] of undatedByBlock) {
+          const label = u.e.dayLabel || 'block';
+          addReview({
+            id: `undated:${u.keys[0]}`, kind: 'undated', title: `${label} — ${u.keys.length} entr${u.keys.length > 1 ? 'ies' : 'y'} without a date`,
+            detail: `${u.names.join(', ')}. The sheet has no session date for ${u.keys.length > 1 ? 'these' : 'this'}; pick the day once and it applies to all.`,
+            ref: refOf(u.e.row, u.e.col), key: u.keys[0], keys: u.keys, raw: u.names.join(' · '),
+          });
+        }
+        programs.push({ fileId: file.id, fileName: file.name, modifiedTime: file.modifiedTime, blocks: [...blocks.values()].sort((a, b) => a.headerRow - b.headerRow || a.exCol - b.exCol) });
         continue;
       }
 
@@ -199,6 +270,8 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
           const norm = normalizeExerciseName(exRaw);
           const canonical = resolveCanonical(norm, config.merges);
           seen(canonical, exRaw);
+          const label = C.muscle != null ? cellText(row[C.muscle]) : '';
+          if (label && !sheetMuscle.has(canonical)) sheetMuscle.set(canonical, label);
           const key = keyOf(r, C.exercise!);
           if (ignored.has(key)) continue;
           const date = lastDate ?? config.dateAssignments[key] ?? null;
@@ -207,6 +280,14 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
           if (!date) {
             addReview({ id: `undated:${key}`, kind: 'undated', title: `${exRaw} — no date`, detail: 'Row has no date.', ref, key, raw: rawBits, exercise: canonical });
             continue;
+          }
+          const gymCell = C.gym != null ? cellText(row[C.gym]) : '';
+          const gym = gymCell || fileGym;
+          gymsSeen.add(gym);
+          let rpe: number | undefined;
+          if (C.rpe != null) {
+            const v = cellNumber(row[C.rpe]);
+            if (v != null && v >= 0 && v <= 10) rpe = map.rpeUnit === 'rir' ? 10 - v : v;
           }
           const { m } = mappingFor(canonical);
           const weight = C.weight != null ? cellNumber(row[C.weight]) : null;
@@ -248,18 +329,35 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
               endurance.push({
                 key: n > 1 ? `${key}#${i}` : key, ref, fileId: file.id, date, exercise: canonical, type, weight, seconds,
                 distanceM: distanceM ?? (type === 'run' ? distanceFromName(canonical) : null),
-                steps: steps ?? (type === 'walking_lunge' && repsList[0] ? repsList[0] : null), raw: rawBits, note,
+                steps: steps ?? (type === 'walking_lunge' && repsList[0] ? repsList[0] : null), raw: rawBits, note, gym,
               });
             }
           } else if (repsList.length) {
             const expanded = repsList.length === 1 && setCount && setCount > 1 ? Array(setCount).fill(repsList[0]) : repsList;
-            expanded.forEach((reps, i) => sets.push({ key: `${key}#${i}`, ref, fileId: file.id, date, exercise: canonical, weight: m.bodyweight && !weight ? null : weight, reps, raw: rawBits, note }));
+            expanded.forEach((reps, i) => sets.push({ key: `${key}#${i}`, ref, fileId: file.id, date, exercise: canonical, weight: m.bodyweight && !weight ? null : weight, reps, raw: rawBits, note, gym, rpe }));
           } else {
             addReview({ id: `value:${key}`, kind: 'value', title: `${exRaw} · ${date}`, detail: 'no reps, time or distance found', ref, key, raw: rawBits });
           }
         }
       }
     }
+  }
+
+  // ---- automatic merges: same words in a different order, or the same letters spaced differently
+  const autoMerge = autoMerges([...rawNames.keys()], config, (n) => [...(rawNames.get(n)?.values() ?? [])].reduce((a, b) => a + b, 0));
+  if (autoMerge.size) {
+    const remap = (n: string) => autoMerge.get(n) ?? n;
+    for (const x of sets) x.exercise = remap(x.exercise);
+    for (const x of endurance) x.exercise = remap(x.exercise);
+    for (const p of programs) for (const b of p.blocks) for (const it of b.items) it.exercise = remap(it.exercise);
+    for (const [alias, target] of autoMerge) {
+      const a = rawNames.get(alias)!, t = rawNames.get(target) ?? new Map<string, number>();
+      for (const [raw, n] of a) t.set(raw, (t.get(raw) ?? 0) + n);
+      rawNames.set(target, t);
+      rawNames.delete(alias);
+      if (sheetMuscle.has(alias) && !sheetMuscle.has(target)) sheetMuscle.set(target, sheetMuscle.get(alias)!);
+    }
+    for (const r of review) if (r.exercise && autoMerge.has(r.exercise)) r.exercise = autoMerge.get(r.exercise);
   }
 
   // ---- bodyweight: one value per date; conflicting duplicates go to review
@@ -273,18 +371,15 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     }
   }
 
-  // ---- possible typos: weight far from this exercise's median
-  const byEx = new Map<string, number[]>();
-  for (const s of sets) if (s.weight != null) byEx.set(s.exercise, [...(byEx.get(s.exercise) ?? []), s.weight]);
-  for (const s of sets) {
-    const ws = byEx.get(s.exercise)!;
-    if (s.weight == null || !ws || ws.length < 3) continue;
-    const sorted = [...ws].sort((a, b) => a - b);
-    const med = sorted[Math.floor(sorted.length / 2)];
-    if (s.weight < med * 0.5 || s.weight > med * 2) {
-      const parts = s.key.split('#')[0].split('!');
-      addReview({ id: `typo:${s.key}`, kind: 'value', title: `${s.exercise} · ${s.date}`, fileId: s.fileId, tab: parts.slice(1, -1).join('!'), cell: parts.at(-1), detail: `${s.weight} lb is far from your usual ~${med} lb — possible typo (still counted until you fix it)`, ref: s.ref, key: s.key, raw: s.raw, suggestion: s.weight < med ? `${s.weight * 10}` : undefined });
-    }
+  // ---- possible typos, judged against the sessions just before and after (same exercise, same gym)
+  for (const t of typoSuspects(sets)) {
+    const s = t.set;
+    const parts = s.key.split('#')[0].split('!');
+    addReview({
+      id: `typo:${s.key}`, kind: 'value', title: `${s.exercise} · ${s.date}`, fileId: s.fileId, tab: parts.slice(1, -1).join('!'), cell: parts.at(-1),
+      detail: `${s.weight} lb is far from the sessions around it (${t.context}) — possible typo (still counted until you fix it)`,
+      ref: s.ref, key: s.key, raw: s.raw, suggestion: t.suggestion != null ? s.raw.replace(String(s.weight), String(t.suggestion)) : undefined,
+    });
   }
 
   // ---- exercise registry
@@ -301,9 +396,10 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
       enduranceType: m.enduranceType, bodyweight: m.bodyweight, confidence: confirmed ? 'confirmed' : m.confidence,
       source: m.source, rule: m.rule, reason: m.reason, count: counts.get(canonical) ?? 0,
     };
-    const auto = detectMuscles(canonical);
+    const auto = mappingFor(canonical).m;
     autoMappings[canonical] = { primary: auto.primary, secondary: auto.secondary, kind: auto.kind, confidence: auto.confidence, rule: auto.rule, confirmed: false };
-    if (!confirmed && m.confidence !== 'high') {
+    // only ask about exercises that actually have logged data
+    if (!confirmed && m.confidence !== 'high' && (counts.get(canonical) ?? 0) > 0) {
       addReview({
         id: `exercise:${canonical}`, kind: 'exercise', title: variants[0],
         detail: m.confidence === 'none' ? 'Could not tell which muscle this works.' : `Best guess ${m.primary} — ${m.reason}.`,
@@ -324,7 +420,80 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     addReview({ id: `merge:${id}`, kind: 'merge', title: `Same exercise? "${exercises[s.a]?.display ?? s.a}" and "${exercises[s.b]?.display ?? s.b}"`, detail: s.why, merge: { a: s.a, b: s.b } });
   }
 
+  const def = config.gyms?.defaultGym || 'Home gym';
   return {
-    bodyweight: [...bwByDate.values()], sets, endurance, exercises, review, files: fileSummaries, autoMappings,
+    bodyweight: [...bwByDate.values()], sets, endurance, exercises, review, files: fileSummaries, autoMappings, programs,
+    gyms: [def, ...[...gymsSeen].filter(g => g !== def)],
   };
+}
+
+function detectHeaderRowSafe(t: SheetTab): boolean {
+  try { return classifyTab(t, '').kind === 'workout-log'; } catch { return false; }
+}
+
+/**
+ * Names that are clearly the same exercise get merged without asking:
+ * same words in any order ("chest press machine" / "machine chest press") or
+ * the same letters with different spacing. Your merges and "not the same" choices always win.
+ */
+export function autoMerges(names: string[], config: AppConfig, weight: (n: string) => number): Map<string, string> {
+  const parent = new Map<string, string>(names.map(n => [n, n]));
+  const find = (x: string): string => { while (parent.get(x) !== x) x = parent.get(x)!; return x; };
+  const rejected = new Set(config.rejectedMerges);
+  const byKey = new Map<string, string>();
+  for (const n of names) {
+    for (const k of [`w:${wordSetKey(n)}`, `s:${n.replace(/\s+/g, '')}`]) {
+      const other = byKey.get(k);
+      if (!other) { byKey.set(k, n); continue; }
+      if (rejected.has([n, other].sort().join('|'))) continue;
+      const a = find(n), b = find(other);
+      if (a !== b) parent.set(a, b);
+    }
+  }
+  const groups = new Map<string, string[]>();
+  for (const n of names) groups.set(find(n), [...(groups.get(find(n)) ?? []), n]);
+  const out = new Map<string, string>();
+  const preferred = (n: string) => (config.exerciseOverrides[n]?.confirmed ? 1000000 : 0) + (Object.values(config.merges).includes(n) ? 100000 : 0) + weight(n);
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    const target = [...g].sort((a, b) => preferred(b) - preferred(a) || a.localeCompare(b))[0];
+    for (const n of g) if (n !== target) out.set(n, target);
+  }
+  return out;
+}
+
+/** Sets whose weight is ≥2× off BOTH the session before and the session after (≥3× when only one neighbour exists). */
+export function typoSuspects(sets: StrengthSet[]): { set: StrengthSet; context: string; suggestion: number | null }[] {
+  const byStation = new Map<string, Map<string, number[]>>();
+  for (const s of sets) {
+    if (s.weight == null || s.weight <= 0) continue;
+    const st = `${s.exercise}|${s.gym}`;
+    const days = byStation.get(st) ?? new Map<string, number[]>();
+    days.set(s.date, [...(days.get(s.date) ?? []), s.weight]);
+    byStation.set(st, days);
+  }
+  const med = (xs: number[]) => { const a = [...xs].sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
+  const out: { set: StrengthSet; context: string; suggestion: number | null }[] = [];
+  for (const s of sets) {
+    if (s.weight == null || s.weight <= 0) continue;
+    const days = byStation.get(`${s.exercise}|${s.gym}`)!;
+    const dates = [...days.keys()].sort();
+    const i = dates.indexOf(s.date);
+    // at the start or end of the history, compare with the nearest few sessions so one odd value can't flag its neighbour
+    const side = (from: number, to: number) => { const xs = dates.slice(Math.max(0, from), Math.max(0, to)).map(d => med(days.get(d)!)); return xs.length ? med(xs) : null; };
+    const both = i > 0 && i < dates.length - 1;
+    const prev = i > 0 ? (both ? med(days.get(dates[i - 1])!) : side(i - 3, i)) : null;
+    const next = i < dates.length - 1 ? (both ? med(days.get(dates[i + 1])!) : side(i + 1, i + 4)) : null;
+    const off = (ref: number, f: number) => s.weight! / ref >= f || ref / s.weight! >= f;
+    let suspicious = false;
+    if (prev != null && next != null) suspicious = off(prev, 2) && off(next, 2);
+    else if (prev != null || next != null) suspicious = off((prev ?? next)!, 3);
+    if (!suspicious) continue;
+    const ref = prev != null && next != null ? (prev + next) / 2 : (prev ?? next)!;
+    const near = (x: number) => x / ref >= 0.75 && x / ref <= 1.34;
+    const suggestion = near(s.weight * 10) ? s.weight * 10 : near(s.weight / 10) ? s.weight / 10 : null;
+    const ctx = [prev != null ? `before: ${prev} lb` : null, next != null ? `after: ${next} lb` : null].filter(Boolean).join(', ');
+    out.push({ set: s, context: ctx, suggestion });
+  }
+  return out;
 }

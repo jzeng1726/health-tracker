@@ -18,7 +18,7 @@ export interface MuscleMapping {
   /** interpret "AxB" as sets x reps (no external load) */
   bodyweight?: boolean;
   confidence: Confidence;
-  source: 'mandatory' | 'library' | 'keyword' | 'muscle-hint' | 'user' | 'none';
+  source: 'mandatory' | 'library' | 'keyword' | 'muscle-hint' | 'sheet' | 'user' | 'none';
   rule: string;
   reason: string;
 }
@@ -32,6 +32,9 @@ const ABBREV: Record<string, string> = {
   pullup: 'pull up', pullups: 'pull up', chinup: 'chin up', chinups: 'chin up', situp: 'sit up', situps: 'sit up',
   stepup: 'step up', stepups: 'step up', hyperextensions: 'hyperextension', rdls: 'rdl', farmers: 'farmer',
   quads: 'quad', calves: 'calf', delts: 'delt', hamstrings: 'hamstring', lats: 'lat', abs: 'abs',
+  tbar: 't bar', vbar: 'v bar', ezbar: 'ez bar', pecdeck: 'pec deck', hammies: 'hamstring', glutes: 'glute',
+  hypers: 'hyperextension', extention: 'extension', extentions: 'extension',
+  pulldwn: 'pulldown', pushdwn: 'pushdown', dumbell: 'dumbbell', dumbells: 'dumbbell', dumbbells: 'dumbbell',
 };
 const KEEP_S = new Set(['press', 'biceps', 'triceps', 'abs', 'cross', 'glutes', 'plus', 'bus', 'across']);
 const IRREGULAR: Record<string, string> = { flies: 'fly', flyes: 'fly', carries: 'carry', crunches: 'crunch', presses: 'press', raises: 'raise', lunges: 'lunge' };
@@ -43,14 +46,43 @@ function singular(w: string): string {
   return w;
 }
 
-/** lowercase, strip punctuation, DB->dumbbell, BB->barbell, 45°/45deg -> 45 degree, singularize */
+/** Words the rules know. Unknown run-together words are split into two of these ("latpulldown" -> "lat pulldown"). */
+let VOCAB: Set<string> | null = null;
+function vocab(): Set<string> {
+  if (VOCAB) return VOCAB;
+  VOCAB = new Set<string>();
+  for (const r of [...MANDATORY_RULES, ...LIBRARY_RULES]) for (const p of r.phrases) for (const w of p.split(' ')) VOCAB.add(w);
+  for (const [w] of MUSCLE_HINTS) VOCAB.add(w);
+  for (const w of STOPWORDS) VOCAB.add(w);
+  for (const w of EQUIPMENT) VOCAB.add(w);
+  for (const w of ['grip', 'mag', 'neutral', 'alternating', 'strict', 'single', 'pad', 'reverse', 'overhand', 'underhand']) VOCAB.add(w);
+  return VOCAB;
+}
+
+function splitCompound(w: string): string[] {
+  const V = vocab();
+  if (w.length < 6 || V.has(w) || /\d/.test(w)) return [w];
+  for (let i = 2; i <= w.length - 2; i++) {
+    const a = w.slice(0, i), b = w.slice(i);
+    const bs = singular(b);
+    if (a.length >= 2 && (V.has(a) || V.has(ABBREV[a] ?? '')) && (V.has(b) || V.has(bs))) return [ABBREV[a] ?? a, V.has(b) ? b : bs];
+  }
+  return [w];
+}
+
+/** lowercase, strip punctuation, DB->dumbbell, BB->barbell, 45°/45deg -> 45 degree, split run-together words, singularize */
 export function normalizeExerciseName(name: string): string {
   let s = (name ?? '').toLowerCase();
   s = s.replace(/°/g, ' degree ').replace(/(\d+)\s*-?\s*(deg|degree|degrees)\b/g, '$1 degree');
   s = s.replace(/[^a-z0-9\s]/g, ' ');
-  const words = s.split(/\s+/).filter(Boolean).flatMap(w => (ABBREV[w] ?? singular(w)).split(' '));
+  const words = s.split(/\s+/).filter(Boolean)
+    .flatMap(w => (ABBREV[w] ? [w] : splitCompound(w)))
+    .flatMap(w => (ABBREV[w] ?? singular(w)).split(' '));
   return words.join(' ');
 }
+
+/** Same words in any order -> same key ("chest press machine" == "machine chest press"). */
+export const wordSetKey = (norm: string) => [...new Set(norm.split(' ').filter(Boolean))].sort().join(' ');
 
 // ---------------------------------------------------------------------- rules
 
@@ -169,9 +201,31 @@ function bestHit(tokens: string[], rules: Rule[]): { best: Hit | null; all: Hit[
   return { best: all[0] ?? null, all };
 }
 
+/** "Tricep supported curl", "Chest-supported row": the muscle word describes the setup, not the target. */
+const SUPPORT_WORDS = new Set(['supported', 'support', 'braced', 'rested']);
+/** Words that only name the equipment / setup — "Triceps machine" is still clearly a triceps exercise. */
+export const EQUIPMENT = new Set([
+  'machine', 'cable', 'dumbbell', 'barbell', 'smith', 'band', 'plate', 'loaded', 'selectorized', 'station', 'rope', 'bar',
+  'single', 'double', 'arm', 'one', 'seated', 'standing', 'kneeling', 'lying', 'laying', 'exercise', 'workout', 'iso', 'lateral',
+  'unilateral', 'bilateral', 'alternating', 'strict', 'slow', 'pause', 'paused', 'weighted', 'assisted', 'hammer', 'strength',
+]);
+const CHEST_PRESS_WORDS = ['incline', 'decline', 'flat', 'clavicular', 'chest', 'pec', 'bench', 'svend', 'floor'];
+
+function hintIn(tokens: string[]): { muscle: Muscle; word: string; index: number } | null {
+  for (let i = 0; i < tokens.length; i++) {
+    const h = MUSCLE_HINTS.find(([w]) => w === tokens[i]);
+    if (h) return { muscle: h[1], word: h[0], index: i };
+  }
+  return null;
+}
+
 export function detectMuscles(rawName: string): MuscleMapping {
   const norm = normalizeExerciseName(rawName);
   const tokens = norm.split(' ').filter(Boolean);
+  // muscle words directly followed by "supported" are setup modifiers ("triceps supported curl" is a curl)
+  const modifierIdx = new Set<number>();
+  tokens.forEach((t, i) => { if (SUPPORT_WORDS.has(tokens[i + 1] ?? '') && MUSCLE_HINTS.some(([w]) => w === t)) modifierIdx.add(i); });
+  const hintTokens = tokens.filter((_, i) => !modifierIdx.has(i));
 
   // 1) mandatory rules
   const mand = bestHit(tokens, MANDATORY_RULES).best;
@@ -184,7 +238,8 @@ export function detectMuscles(rawName: string): MuscleMapping {
 
   // 2) library, most-specific phrase wins
   const { best, all } = bestHit(tokens, LIBRARY_RULES);
-  const hint = MUSCLE_HINTS.find(([w]) => tokens.includes(w))?.[1];
+  const hint = hintIn(hintTokens);
+  const modNote = modifierIdx.size ? `; "${[...modifierIdx].map(i => `${tokens[i]} ${tokens[i + 1]}`).join(', ')}" describes the setup, not the muscle` : '';
 
   if (best) {
     const r = best.rule;
@@ -193,16 +248,27 @@ export function detectMuscles(rawName: string): MuscleMapping {
     let confidence: Confidence = r.generic || rival ? 'low' : 'high';
     let reason = `matched "${best.phrase}"` + (best.words > 1 ? ` (${best.words}-word phrase beats shorter keywords)` : '');
     if (rival) reason += `; conflicts with "${rival.phrase}" → ${rival.rule.primary}`;
-    if (r.generic) reason += '; only a generic keyword matched — please confirm';
-    if (hint && r.generic && hint !== r.primary) {
-      return { primary: hint, secondary: [], kind: 'strength', confidence: 'low', source: 'muscle-hint', rule: `name says "${hint}"`, reason: `${reason}; name mentions ${hint}` };
+    const hintInPhrase = hint && best.phrase.split(' ').includes(hint.word);
+    if (r.generic) {
+      if (hint && hint.muscle !== r.primary && !hintInPhrase) {
+        return { primary: hint.muscle, secondary: [], kind: 'strength', confidence: 'low', source: 'muscle-hint', rule: `name says "${hint.muscle}"`, reason: `${reason}; name mentions ${hint.muscle} — please confirm` };
+      }
+      if (r.id === 'curl (generic)' && !rival) {
+        // any curl that names no other muscle is a biceps curl ("Recline Curl", "Tricep supported curls")
+        confidence = 'high';
+        reason += `; a curl that names no other muscle works biceps${modNote}`;
+      } else if (r.id === 'press (generic)' && !rival && tokens.some(t => CHEST_PRESS_WORDS.includes(t))) {
+        confidence = 'high';
+        reason += `; "${tokens.find(t => CHEST_PRESS_WORDS.includes(t))}" press is a chest press`;
+      } else if (hint && hint.muscle === r.primary && !rival) {
+        confidence = 'high';
+        reason += `; name mentions ${hint.muscle}`;
+      } else {
+        reason += '; only a generic keyword matched — please confirm';
+      }
     }
-    if (hint && hint === r.primary && confidence === 'low' && !rival) {
-      confidence = 'high';
-      reason += `; name mentions ${hint}`;
-    }
-    const unknownWords = tokens.filter(t => !all.some(h => h.phrase.split(' ').includes(t)) && !STOPWORDS.has(t));
-    if (r.generic && unknownWords.length) reason += `; unrecognised words: ${unknownWords.join(', ')}`;
+    const unknownWords = tokens.filter(t => !all.some(h => h.phrase.split(' ').includes(t)) && !STOPWORDS.has(t) && !EQUIPMENT.has(t));
+    if (confidence === 'low' && unknownWords.length) reason += `; unrecognised words: ${unknownWords.join(', ')}`;
     return {
       primary: r.primary, secondary: r.secondary ?? [], kind: r.kind ?? 'strength', enduranceType: r.enduranceType,
       bodyweight: r.bodyweight, confidence, source: r.generic ? 'keyword' : 'library', rule: r.id, reason,
@@ -210,15 +276,41 @@ export function detectMuscles(rawName: string): MuscleMapping {
   }
 
   if (hint) {
-    return { primary: hint, secondary: [], kind: 'strength', confidence: 'low', source: 'muscle-hint', rule: `name says "${hint}"`, reason: 'no exercise rule matched; used muscle word in the name' };
+    // "Triceps machine", "Cable chest", "Back machine (wide)" — only equipment words besides the muscle
+    const others = hintTokens.filter((t, i) => i !== hint.index && !STOPWORDS.has(t) && !EQUIPMENT.has(t) && !/^\d+$/.test(t));
+    if (!others.length) {
+      return { primary: hint.muscle, secondary: [], kind: 'strength', confidence: 'high', source: 'muscle-hint', rule: `"${hint.word}" + equipment`, reason: `names the muscle (${hint.word}) and only equipment words` };
+    }
+    return { primary: hint.muscle, secondary: [], kind: 'strength', confidence: 'low', source: 'muscle-hint', rule: `name says "${hint.muscle}"`, reason: `no exercise rule matched; used the muscle word in the name (unrecognised: ${others.join(', ')})` };
   }
   return { primary: null, secondary: [], kind: 'strength', confidence: 'none', source: 'none', rule: '—', reason: 'no rule matched' };
+}
+
+/** A muscle named by the sheet itself (e.g. a "Muscle Group" column). */
+export function muscleFromLabel(label: string): Muscle | null {
+  const t = normalizeExerciseName(label);
+  if (!t) return null;
+  const direct = MUSCLES.find(m => m.toLowerCase() === t || `${m.toLowerCase()}`.replace(/s$/, '') === t);
+  if (direct) return direct;
+  const extra: Record<string, Muscle> = { leg: 'Quads', legs: 'Quads', arm: 'Biceps', ab: 'Core', abs: 'Core', delt: 'Shoulders', glute: 'Hamstrings', hamstring: 'Hamstrings', quad: 'Quads', calf: 'Calves', pec: 'Chest', lat: 'Back', trap: 'Back', shoulder: 'Shoulders', bicep: 'Biceps', tricep: 'Triceps', biceps: 'Biceps', triceps: 'Triceps' };
+  for (const w of t.split(' ')) if (extra[w]) return extra[w];
+  return hintIn(t.split(' '))?.muscle ?? null;
+}
+
+/** Combine automatic detection with what the sheet says. The sheet wins when they disagree. */
+export function withSheetMuscle(auto: MuscleMapping, label: string | undefined): MuscleMapping {
+  if (!label) return auto;
+  const m = muscleFromLabel(label);
+  if (!m || auto.kind !== 'strength') return auto;
+  if (auto.primary === m) return { ...auto, confidence: 'high', reason: `${auto.reason}; sheet's muscle column agrees (${label.trim()})` };
+  return { ...auto, primary: m, secondary: [], confidence: 'high', source: 'sheet', rule: 'sheet muscle column', reason: `the sheet's muscle column says ${label.trim()}` };
 }
 
 const STOPWORDS = new Set([
   'seated', 'standing', 'single', 'arm', 'double', 'one', 'two', 'machine', 'cable', 'dumbbell', 'barbell', 'wide', 'close',
   'narrow', 'grip', 'kneeling', 'band', 'supported', 'lying', 'laying', 'incline', 'decline', 'v', 'bar', 'ez', 'rope',
   'weighted', 'assisted', 'smith', 'the', 'with', 'and', '1', '2', '45', 'degree', 'mile', 'hanging', 'low', 'high',
+  'neutral', 'mag', 'alternating', 'strict', 'flat', 'reverse', 'overhand', 'underhand', 'pronated', 'supinated',
 ]);
 
 // ------------------------------------------------------------------ fuzzy merge
@@ -251,7 +343,9 @@ export function suggestMerges(names: string[]): MergeSuggestion[] {
       const [small, big] = ta.length < tb.length ? [ta, tb] : [tb, ta];
       if (small.length >= 2 && small.every(t => big.includes(t))) {
         const extra = big.filter(t => !small.includes(t));
-        if (extra.every(t => STOPWORDS.has(t) || ['seated', 'machine', 'double', 'arm', 'grip'].includes(t))) {
+        // a different grip or angle is a different exercise ("wide grip", "incline"), so those never get suggested
+        const VARIANT = new Set(['wide', 'close', 'narrow', 'neutral', 'grip', 'incline', 'decline', 'reverse', 'single', 'one', 'v', 'mag', 'high', 'low', 'overhand', 'underhand']);
+        if (extra.every(t => (STOPWORDS.has(t) || ['seated', 'machine', 'double', 'arm'].includes(t)) && !VARIANT.has(t))) {
           out.push({ a, b, why: `same words plus "${extra.join(' ')}"` });
         }
       }

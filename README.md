@@ -85,15 +85,16 @@ Drop any Google Sheet, or a **shortcut** to a sheet someone shared with you, int
 | Detected as | How it's recognised | Example headers |
 |---|---|---|
 | **Bodyweight log** | a Date column + a weight column, no Exercise column. Repeated header blocks (like one block per week) are fine. | `Date`, `Morning Weight` |
-| **Workout log** | Date + Exercise + any of load / sets / reps / time / distance | `Date`, `Exercise`, `Weight`, `Sets`, `Reps`, `Time`, `Distance` |
+| **Workout log** | Date + Exercise + any of load / sets / reps / time / distance. Optional `Muscle Group`, `Gym` and `RPE`/`RIR` columns are used when present. A blank date means "same day as the row above". | `Date`, `Exercise`, `Load (lb)`, `Sets`, `Reps`, `Muscle Group`, `Gym`, `RPE` |
 | **Program grid** | coach layout with `SETS / REPS` next to a result column (`DATE & WEIGHT`). Session dates are read from the result column. | FB A/B day sheets |
 | **Skipped (derived)** | mostly formula output copied from another tab (e.g. `ChartData`), so nothing is counted twice | |
+| **Skipped (duplicate)** | a copy of another sheet in the folder: ≥80% of its logged results are identical. The fuller / newer copy is kept. | |
 
 If a tab can't be classified it appears under **Review → Sheets that need column mapping**. Pick the header row and a role for each column once; the mapping is saved to `_config` for both computers.
 
-Handled automatically: blank rows, `m/d` dates with or without a year, `3x8` sets×reps, `150x15,10,8`, `L-40x20 R-40x20`, `R1-45x8 R2-45x8`, half reps (`10.5`), notes after the numbers, and results one row below their exercise. **Rep ranges** (`12-13`) count as the lower number.
+Handled automatically: blank rows, `m/d` dates with or without a year, `3x8` sets×reps, `150x15,10,8`, several sets in one cell (`1. 150x7 2. 130x13`), `L-40x20 R-40x20`, `R1-45x8 R2-45x8`, half reps (`10.5`), RPE written in the cell (`140x9 @9`), notes after the numbers, results one row below their exercise, and setup notes under an exercise (`1 Higher pad position`). **Rep ranges** (`12-13`) count as the lower number.
 
-Things that are **flagged, never guessed**: unreadable times, weights far from your usual (possible typos), undated entries, unclear ranges. Fix them in **Review** with one click. The app stores the fix as a *correction* and reads your sheet through it; the sheet itself is never edited.
+Things that are **flagged, never guessed**: unreadable times, a side written without reps (`R-90x`, with a one-click "copy the other side" fix), a weight ≥2× off **both** the session before and after it (possible typo — fast real progress like 30 → 40 → 70 is not flagged), undated entries (one date picker per day block), unclear ranges. Fix them in **Review** with one click. The app stores the fix as a *correction* and reads your sheet through it; the sheet itself is never edited.
 
 ---
 
@@ -124,9 +125,13 @@ Distances: `mi`/`mile`, `km`/`k`, `m`/`meters`, `yd`, `ft`, `steps`. Runs displa
 
 ## 6. Automatic muscle detection
 
-Every exercise name is normalised first: lowercase, punctuation removed, `DB` → dumbbell, `BB` → barbell, `45°`/`45 degree`/`45deg` → 45 degree, `Tri Ext` → triceps extension, plurals → singular. Then it's matched against a built-in library.
+Every exercise name is normalised first: lowercase, punctuation removed, `DB` → dumbbell, `BB` → barbell, `45°`/`45 degree`/`45deg` → 45 degree, `Tri Ext` → triceps extension, run-together words split (`latpulldown` → lat pulldown, `hammercurls` → hammer curl, `GripLat` → grip lat), plurals → singular. Then it's matched against a built-in library.
 
 - **The most specific match wins.** The longest matching phrase beats shorter keywords, so "back extension" isn't Back just because it contains "back", and "leg curl" isn't Biceps just because it contains "curl".
+- **The movement beats a muscle word used as a setup.** "Tricep supported curls" is a curl (Biceps): a muscle word followed by "supported" describes the pad, not the target. Any curl that names no other muscle is Biceps.
+- **Muscle + equipment only** ("Tricep machine", "Chest machine") → that muscle, high confidence.
+- **A `Muscle Group` column in the sheet** is trusted over the automatic guess.
+- **Same words in a different order** ("Chest press machine" / "Machine Chest Press") or the same letters spaced differently are merged automatically. Different grips (wide / close / neutral) are never merged.
 - **Primary** muscle counts 100%. **Secondary** muscles count 50%.
 - **Confidence:** a specific phrase or one of your rules → *high*, assigned silently. Only a generic keyword ("press", "curl") or nothing at all → *low / none*, shown in **Review** with the best guess preselected for one-click confirmation.
 
@@ -137,20 +142,40 @@ Every exercise name is normalised first: lowercase, punctuation removed, `DB` �
 
 **Override:** Review → *Full exercise → muscle map* → **Edit**. Your edits are saved to `_config`, synced to both computers, and always beat the automatic rules (**Reset** goes back to automatic). **Merges** (e.g. "Laying Leg Curl" → "Lying Leg Curl") are proposed when names look alike and applied only after you confirm; **Un-merge** undoes them.
 
-**Scores:** muscle score = average % change in estimated 1RM (`weight × (1 + reps/30)`) across the exercises mapped to that muscle, primary weighted 1 and secondary ½. The baseline is each exercise's first session in the selected date range. Overall = weighted average of all muscle scores. **Endurance never affects 1RM scores.** An optional Settings toggle counts lunges toward Quads and carries/holds toward Core + Back **weekly sets**.
+**Scores:** muscle score = average % change in estimated 1RM (`weight × (1 + reps/30)`) across the exercises mapped to that muscle, primary weighted 1 and secondary ½. The baseline is each exercise's first session in the selected date range — **per gym** (see below). An exercise that starts later joins the score once it has a second session. Overall = weighted average of all muscle scores. **Endurance never affects 1RM scores.** An optional Settings toggle counts lunges toward Quads and carries/holds toward Core + Back **weekly sets**.
+
+---
+
+## 6b. Different gyms
+
+The same lift on a different gym's machine is a different scale (gym B's lat pulldown at 120 can be as hard as gym A's at 140). So every set carries a **gym**:
+
+- **Where it comes from:** Settings → *Gyms* (one choice per sheet; sheets with vacation/travel/trip/hotel in the name start as "Vacation gym"), a `Gym` column in any workout log (overrides per row), and the Gym picker in Quick Entry.
+- **PRs and % change are per gym** — each gym is compared only to itself, so a lighter vacation machine never looks like lost strength.
+- **Automatic conversion:** when you've done an exercise at two gyms within 14 days, the app pairs the all-out sets (RPE 8–10, which is assumed unless you wrote a lower RPE) and learns a factor: *main-gym est. 1RM ÷ other-gym est. 1RM*. It's used to draw one line on the exercise chart (open dots = converted) and to estimate a starting weight in Gym prep. Settings → *Gym conversions* shows each factor and how it was worked out; you can set your own or turn it off.
+- **RPE is optional.** Add an `RPE` (or `RIR`) column, write `@9` after a set, or pick it in Quick Entry.
+
+## 6c. Gym prep, targets and alerts
+
+- **Gym prep** picks the next unlogged A/B day from your newest coach sheet (or repeats your last session at the gym you pick). For each exercise: last time *at that gym*, today's target by double progression (reach the top of the rep range → add 5 lb, 2.5 under 40 lb), and the set that would be a PR.
+- **Strength ÷ bodyweight:** est. 1RM ÷ 7-day average bodyweight that day (column "× BW" and a chart per exercise).
+- **Loss-rate band:** the bodyweight chart shades the zone for losing 0.5–1% of bodyweight per week from the start of the range; the weekly rate says on target / slower / faster. Change the band in Settings → *Targets*.
+- **Stale / sparse weigh-ins:** a banner when the last weigh-in is more than 3 days old or the latest 7-day average uses fewer than 4 weigh-ins.
+- **Plateaus:** a lift with no new best est. 1RM in 3+ sessions at that gym (and still being trained) is listed on the Dashboard and tagged on Strength.
+- **Weekly volume heatmap:** sets per muscle for the last 8 weeks vs your target range (Settings → *Targets*, default 4–10).
 
 ---
 
 ## 7. Reconnect Google
 
-While the app's OAuth screen is in **Testing** mode, Google expires the sign-in about **every 7 days**. When that happens you'll see a yellow banner: *"Your Google sign-in expired… Showing cached data."* Click **Reconnect Google**, sign in again in the browser, and you're done. Nothing is lost and charts never go blank. The token is stored only in the macOS Keychain / Windows Credential Manager (Settings → Disconnect removes it).
+While the app's OAuth consent screen is in **Testing** mode, Google expires the sign-in about **every 7 days**. To stop that: Google Cloud Console → *Google Auth Platform* → *Audience* → **Publish app** → Confirm, then Settings → Reconnect Google once. When that happens you'll see a yellow banner: *"Your Google sign-in expired… Showing cached data."* Click **Reconnect Google**, sign in again in the browser, and you're done. Nothing is lost and charts never go blank. The token is stored only in the macOS Keychain / Windows Credential Manager (Settings → Disconnect removes it).
 
 ---
 
 ## 8. Updating the app
 
 - **Installed apps update themselves.** On launch they check GitHub Releases. When a new version exists, a banner offers **Install & restart**. Settings → *Check for updates* checks on demand.
-- **To publish a new version:** bump `"version"` in `package.json` (e.g. `0.1.0` → `0.2.0`), commit, then either push a tag `v0.2.0` or run **Actions → Build installers → Run workflow**. About 15 minutes later the release is up and both computers offer the update.
+- **To publish a new version:** bump `"version"` in `package.json` (e.g. `0.1.4` → `0.1.5`) and commit to `main`. The build starts by itself whenever `package.json` changes (you can also run **Actions → Build installers → Run workflow**). About 15 minutes later the release is up and both computers offer the update.
 
 ---
 

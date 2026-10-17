@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useSync, todayISO, useToast } from '../ui/common';
+import { useSync, todayISO, useToast, GymSelect, useCurrentGym, takePrefill } from '../ui/common';
 import { logBodyweight, logWorkout, bodyweightTargets, workoutTargets } from '../sync/engine';
 import { parseDuration, parseDistance, formatDuration } from '../core/time';
 import { detectMuscles, normalizeExerciseName } from '../core/muscles';
@@ -78,11 +78,14 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
   const s = useSync();
   const toast = useToast();
   const targets = useMemo(() => workoutTargets(), [s.files, s.dataset]);
+  const [pre] = useState(() => (mode === 'strength' ? takePrefill() : null));
   const [date, setDate] = useState(todayISO());
-  const [ex, setEx] = useState('');
-  const [weight, setWeight] = useState('');
+  const [ex, setEx] = useState(pre?.exercise ?? '');
+  const [weight, setWeight] = useState(pre?.weight != null ? String(pre.weight) : '');
   const [sets, setSets] = useState(mode === 'strength' ? '1' : '');
-  const [reps, setReps] = useState('');
+  const [reps, setReps] = useState(pre?.reps != null ? String(pre.reps) : '');
+  const [rpe, setRpe] = useState('');
+  const [gym, setGym] = useCurrentGym();
   const [time, setTime] = useState('');
   const [dist, setDist] = useState('');
   const [notes, setNotes] = useState('');
@@ -111,9 +114,10 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
       const r = await logWorkout({
         date, exercise: ex.trim(), weight: weight === '' ? null : Number(weight), sets: sets === '' ? null : Number(sets), reps: reps === '' ? null : Number(reps),
         timeText: t && !t.ambiguous ? formatDuration(t.seconds) : '', distanceText: dd && !dd.ambiguous ? `${dd.value} ${dd.unit}` : '', notes,
+        gym, rpe: rpe === '' ? null : Number(rpe),
       }, target || undefined);
       toast(`Logged ${ex.trim()}${t?.seconds != null ? ` · ${formatDuration(t.seconds)}` : ''} → ${r.where}`);
-      setWeight(''); setReps(''); setTime(''); setDist(''); setNotes('');
+      setWeight(''); setReps(''); setTime(''); setDist(''); setNotes(''); setRpe('');
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
 
@@ -134,7 +138,16 @@ function WorkoutForm({ mode, disabled }: { mode: 'strength' | 'endurance'; disab
         <label>Weight (lb){mode === 'endurance' && ' · optional'}<input type="number" step="0.5" value={weight} onChange={e => setWeight(e.target.value)} placeholder={mode === 'endurance' ? 'per hand' : '210'} /></label>
         <label>Sets<input type="number" min="1" value={sets} onChange={e => setSets(e.target.value)} placeholder="1" /></label>
         <label>{mode === 'endurance' ? 'Reps / steps' : 'Reps'}<input type="number" step="0.5" value={reps} onChange={e => setReps(e.target.value)} placeholder={mode === 'endurance' ? 'optional' : '10'} /></label>
+        {mode === 'strength' && (
+          <label>RPE · optional
+            <select value={rpe} onChange={e => setRpe(e.target.value)}>
+              <option value="">all-out</option>
+              {['10', '9.5', '9', '8.5', '8', '7.5', '7', '6'].map(v => <option key={v} value={v}>{v}{v === '10' ? ' · failure' : v === '9' ? ' · 1 left' : v === '8' ? ' · 2 left' : ''}</option>)}
+            </select>
+          </label>
+        )}
       </div>
+      <label>Gym<GymSelect value={gym} onChange={setGym} /></label>
       {mode === 'endurance' && (
         <div className="row">
           <label>Time<input value={time} onChange={e => setTime(e.target.value)} placeholder="1:30  (= 1 min 30 s)" aria-describedby="time-hint" /></label>

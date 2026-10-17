@@ -12,7 +12,7 @@ export interface SheetFile {
   tabs: SheetTab[];
 }
 
-export type TabKind = 'bodyweight' | 'program-grid' | 'workout-log' | 'derived' | 'empty' | 'config' | 'unknown';
+export type TabKind = 'bodyweight' | 'program-grid' | 'workout-log' | 'derived' | 'empty' | 'config' | 'duplicate' | 'unknown';
 
 export interface BodyweightEntry { date: string; weight: number; fileId: string; ref: string }
 
@@ -29,6 +29,10 @@ export interface StrengthSet {
   perSide?: boolean;
   raw: string;
   note?: string;
+  /** where it was done — each gym's machines are compared only to themselves */
+  gym: string;
+  /** effort if written (RPE 1–10) */
+  rpe?: number;
 }
 
 export interface EnduranceEntry {
@@ -46,6 +50,7 @@ export interface EnduranceEntry {
   round?: number;
   raw: string;
   note?: string;
+  gym: string;
 }
 
 export interface ExerciseInfo {
@@ -82,6 +87,8 @@ export interface ReviewItem {
   suggestion?: string;
   merge?: { a: string; b: string };
   exercise?: string;
+  /** undated: every entry key this one date applies to */
+  keys?: string[];
 }
 
 export interface FileSummary {
@@ -100,6 +107,27 @@ export interface Dataset {
   exercises: Record<string, ExerciseInfo>;
   review: ReviewItem[];
   files: FileSummary[];
+  /** coach program sheets, for the Gym prep view */
+  programs: Program[];
+  /** gym names seen in the data (default first) */
+  gyms: string[];
   /** automatic mappings to persist into _config.autoMappings */
   autoMappings: Record<string, { primary: Muscle | null; secondary: Muscle[]; kind: ExerciseKind; confidence: string; rule: string; confirmed: boolean }>;
 }
+
+export interface ProgramItem {
+  exercise: string;       // canonical
+  display: string;        // as written
+  prescription: string;   // "1x8-10"
+  notes: string[];        // e.g. "1 Higher pad position"
+  result: string;         // what was logged in this block ('' = not done yet)
+}
+export interface ProgramBlock {
+  dayLabel: string;       // "FB A DAY"
+  headerRow: number;
+  exCol: number;
+  date: string | null;
+  items: ProgramItem[];
+  logged: number;         // items with a result
+}
+export interface Program { fileId: string; fileName: string; modifiedTime: string; blocks: ProgramBlock[] }

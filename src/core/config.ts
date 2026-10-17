@@ -31,13 +31,26 @@ export function fnv1a(s: string): string {
   return h.toString(16).padStart(8, '0');
 }
 
-export type ColumnRole = 'date' | 'exercise' | 'bodyweight' | 'weight' | 'sets' | 'reps' | 'setsxreps' | 'time' | 'distance' | 'notes' | 'ignore';
+export type ColumnRole = 'date' | 'exercise' | 'bodyweight' | 'weight' | 'sets' | 'reps' | 'setsxreps' | 'time' | 'distance' | 'notes' | 'gym' | 'rpe' | 'muscle' | 'ignore';
 export interface ColumnMapping {
   type: 'bodyweight' | 'workout' | 'ignore';
   headerRow: number; // 0-based
   columns: Partial<Record<ColumnRole, number>>;
   timeUnit?: 'seconds' | 'minutes' | 'hours';
   distanceUnit?: 'mi' | 'km' | 'm' | 'yd' | 'ft' | 'steps';
+  rpeUnit?: 'rpe' | 'rir';
+}
+
+/** Where each set was done. Same lift, different gym = different machine, so each gym is compared to itself. */
+export interface GymConfig {
+  /** gym every sheet uses unless set below */
+  defaultGym: string;
+  /** extra gym names you've added */
+  names: string[];
+  /** fileId -> gym name */
+  bySheet: Record<string, string>;
+  /** "exercise|gym" -> your own conversion factor to the main gym (null = never convert) */
+  factorOverrides: Record<string, number | null>;
 }
 
 export interface Settings {
@@ -50,6 +63,14 @@ export interface Settings {
   /** file ids chosen as default Quick Entry targets */
   quickEntryBodyweightFile?: string;
   quickEntryWorkoutFile?: string;
+  /** target weekly loss band, % of bodyweight per week */
+  lossRateMinPct: number;
+  lossRateMaxPct: number;
+  /** weekly working-set target per muscle (heatmap) */
+  weeklySetsMin: number;
+  weeklySetsMax: number;
+  /** RIR assumed when a set has no RPE (you train every set close to failure) */
+  defaultRir: number;
 }
 
 export interface AppConfig {
@@ -69,6 +90,7 @@ export interface AppConfig {
   /** `${fileId}:${tabTitle}` -> mapping chosen in "Needs review" */
   columnMappings: Record<string, ColumnMapping>;
   settings: Settings;
+  gyms: GymConfig;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -78,18 +100,26 @@ export const DEFAULT_SETTINGS: Settings = {
   enduranceCountsTowardVolume: false,
   repRange: 'lower',
   carryWeightPerHand: true,
+  lossRateMinPct: 0.5,
+  lossRateMaxPct: 1,
+  weeklySetsMin: 4,
+  weeklySetsMax: 10,
+  defaultRir: 1,
 };
+
+export const DEFAULT_GYMS: GymConfig = { defaultGym: 'Home gym', names: [], bySheet: {}, factorOverrides: {} };
 
 export function defaultConfig(): AppConfig {
   return {
     version: 1, goals: {}, autoMappings: {}, exerciseOverrides: {}, merges: {}, rejectedMerges: [],
     corrections: [], dateAssignments: {}, ignored: [], columnMappings: {}, settings: { ...DEFAULT_SETTINGS },
+    gyms: structuredClone(DEFAULT_GYMS),
   };
 }
 
 export const CONFIG_KEYS: (keyof AppConfig)[] = [
   'version', 'goals', 'autoMappings', 'exerciseOverrides', 'merges', 'rejectedMerges', 'corrections',
-  'dateAssignments', 'ignored', 'columnMappings', 'settings',
+  'dateAssignments', 'ignored', 'columnMappings', 'settings', 'gyms',
 ];
 
 export interface ConfigRow { key: string; value: string; updatedAt: string; device: string }
@@ -101,7 +131,7 @@ export function configFromRows(rows: ConfigRow[], base: AppConfig = defaultConfi
     if (!CONFIG_KEYS.includes(r.key as keyof AppConfig)) continue;
     try {
       const v = JSON.parse(r.value);
-      config[r.key] = r.key === 'settings' ? { ...DEFAULT_SETTINGS, ...v } : v;
+      config[r.key] = r.key === 'settings' ? { ...DEFAULT_SETTINGS, ...v } : r.key === 'gyms' ? { ...DEFAULT_GYMS, ...v } : v;
       stamps[r.key] = r.updatedAt;
     } catch {
       /* corrupted cell: keep default, never crash */
@@ -144,4 +174,28 @@ export function applySeed(config: AppConfig, stamps: Record<string, string>, see
     }
   }
   return { config: out, seeded };
+}
+
+/**
+ * One-time fixes to configs written by older versions. Returns the keys it changed
+ * so the engine can push them back to _config.
+ *  v2: removes the bad "30x12-15 -> 300x12-15" lateral-raise correction (Week 01, C3) that the
+ *      old median-based typo check suggested — 30 lb was right; the weights simply went up fast.
+ */
+export function migrateConfig(cfg: AppConfig): { config: AppConfig; changed: (keyof AppConfig)[] } {
+  const out = structuredClone(cfg);
+  const changed = new Set<keyof AppConfig>();
+  if ((out.version ?? 1) < 2) {
+    const WEEK01 = '73077d87'; // fnv1a of the Week 01 sheet id
+    const isWeek01 = (id?: string, hash?: string) => hash === WEEK01 || (!!id && fnv1a(id) === WEEK01);
+    const bad = (c: Correction) => isWeek01(c.sheetId, c.sheetIdHash) && c.cell.toUpperCase() === 'C3' && c.to.trim() === '300x12-15';
+    const before = out.corrections.length;
+    out.corrections = out.corrections.filter(c => !bad(c));
+    if (out.corrections.length !== before) changed.add('corrections');
+    const ig = out.ignored.filter(k => { const m = k.match(/^typo:([^!]+)!.*!C3(#\d+)?$/); return !(m && isWeek01(m[1])); });
+    if (ig.length !== out.ignored.length) { out.ignored = ig; changed.add('ignored'); }
+    out.version = 2;
+    changed.add('version');
+  }
+  return { config: out, changed: [...changed] };
 }

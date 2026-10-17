@@ -6,6 +6,7 @@
  * for every entry below them in that block.
  */
 import type { SheetCell } from './time';
+import { detectMuscles } from './muscles';
 
 export interface GridEntry {
   sheetId: string;
@@ -22,6 +23,8 @@ export interface GridEntry {
   col: number;              // result column, 0-based
   offset: number;           // rows below block header
   flags: string[];
+  /** which day block (header row + exercise column) the entry belongs to */
+  block: { headerRow: number; exCol: number };
 }
 
 const SECTION_LABELS = /^(prioritize|upper portion|lower portion|endurance portion|abs circuit|cardio|core|warm ?up)\s*:?$/i;
@@ -59,6 +62,13 @@ export function cellDate(c: SheetCell | undefined, inferYear: number): string | 
 
 export interface GridSheet { id: string; title: string; tab: string; modifiedYear: number; rows: SheetCell[][] }
 
+/** A line under an exercise that reads like a note: no rule recognises it, or it starts with a number/setting word. */
+export function isNoteText(t: string): boolean {
+  if (/^(\d+\s+)?(higher|lower|seat|pad|pin|setting|position|grip|notch|hole|use|note|cue|slow|pause|tempo|rest)\b/i.test(t)) return true;
+  if (/^\d/.test(t) && !/\b(mile|km|run|min)\b/i.test(t)) return detectMuscles(t).confidence === 'none';
+  return detectMuscles(t).confidence === 'none' && t.split(/\s+/).length >= 3;
+}
+
 export function isProgramGrid(rows: SheetCell[][]): boolean {
   return rows.some(r => r.some(c => HEADER_RX.test(cellText(c))));
 }
@@ -87,6 +97,11 @@ export function parseGrid(sheet: GridSheet): GridEntry[] {
         const res = cellText(resCell);
         const d = cellDate(resCell, sheet.modifiedYear);
 
+        // "1 Higher pad position" under an exercise: a setup note, not an exercise
+        if (ex && !rx && !res && last && !SECTION_LABELS.test(ex) && isNoteText(ex)) {
+          last.extraNotes.push(ex);
+          continue;
+        }
         if (!ex || SECTION_LABELS.test(ex)) {
           if (d) { date = d; continue; }
           if (!ex && res && last) {
@@ -104,7 +119,7 @@ export function parseGrid(sheet: GridSheet): GridEntry[] {
         const entry: GridEntry = {
           sheetId: sheet.id, sheetTitle: sheet.title, tab: sheet.tab,
           exercise: ex, prescription: rx, resultCell: d ? null : resCell ?? null, resultText: d ? '' : res,
-          extraNotes: [], date, dayLabel, row: r, col: exCol + 2, offset: r - hr, flags: [],
+          extraNotes: [], date, dayLabel, row: r, col: exCol + 2, offset: r - hr, flags: [], block: { headerRow: hr, exCol },
         };
         if (d) {
           // a date sitting in an exercise's result cell starts a new session from here

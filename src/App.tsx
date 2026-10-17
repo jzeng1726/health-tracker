@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { RangeCtx, RangePicker, useSync, type Range } from './ui/common';
 import { connect, sync, chooseFolder, installUpdate } from './sync/engine';
 import Dashboard from './pages/Dashboard';
+import Prep from './pages/Prep';
 import Bodyweight from './pages/Bodyweight';
 import Strength from './pages/Strength';
 import Endurance from './pages/Endurance';
@@ -10,15 +11,16 @@ import Review from './pages/Review';
 import Settings from './pages/Settings';
 import { CredentialsPanel } from './ui/Credentials';
 
-export type Page = 'dashboard' | 'bodyweight' | 'strength' | 'endurance' | 'quick' | 'review' | 'settings';
-const PAGES: { id: Page; label: string }[] = [
-  { id: 'dashboard', label: 'Dashboard' },
-  { id: 'bodyweight', label: 'Bodyweight' },
-  { id: 'strength', label: 'Strength' },
-  { id: 'endurance', label: 'Endurance' },
-  { id: 'quick', label: 'Quick Entry' },
-  { id: 'review', label: 'Review' },
-  { id: 'settings', label: 'Settings' },
+export type Page = 'dashboard' | 'prep' | 'bodyweight' | 'strength' | 'endurance' | 'quick' | 'review' | 'settings';
+const PAGES: { id: Page; label: string; icon: string }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
+  { id: 'prep', label: 'Gym prep', icon: 'M6.5 6.5v11M17.5 6.5v11M3 9.5v5M21 9.5v5M6.5 12h11' },
+  { id: 'bodyweight', label: 'Bodyweight', icon: 'M4 20h16M6 20l2-12h8l2 12M12 8V5M9.5 12.5 12 11' },
+  { id: 'strength', label: 'Strength', icon: 'M3 17l6-6 4 4 8-8M15 7h6v6' },
+  { id: 'endurance', label: 'Endurance', icon: 'M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 9v4l2.5 2.5M9.5 2.5h5' },
+  { id: 'quick', label: 'Quick Entry', icon: 'M12 5v14M5 12h14' },
+  { id: 'review', label: 'Review', icon: 'M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9' },
+  { id: 'settings', label: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z' },
 ];
 
 const load = <T,>(k: string, d: T): T => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
@@ -66,16 +68,16 @@ export default function App() {
   if (s.auth === 'disconnected' && !hasData) return <Setup />;
 
   const title = PAGES.find(p => p.id === page)?.label;
-  const showRange = page !== 'quick' && page !== 'settings' && page !== 'review';
+  const showRange = page !== 'quick' && page !== 'settings' && page !== 'review' && page !== 'prep';
 
   return (
     <RangeCtx.Provider value={rangeCtx}>
       <div className="app">
         <nav className="sidebar" aria-label="Sections">
-          <div className="brand"><span className="dot" />Health Tracker</div>
+          <div className="brand"><span className="logo" aria-hidden><svg viewBox="0 0 24 24"><path d="M3 12h4l2-5 4 10 2-5h6" /></svg></span>Health Tracker</div>
           {PAGES.map(p => (
             <button key={p.id} className={`nav-btn ${page === p.id ? 'active' : ''}`} onClick={() => setPage(p.id)} aria-current={page === p.id ? 'page' : undefined}>
-              {p.label}
+              <span className="nav-l"><svg className="ico" viewBox="0 0 24 24" aria-hidden><path d={p.icon} /></svg>{p.label}</span>
               {p.id === 'review' && reviewCount > 0 && <span className="badge" aria-label={`${reviewCount} to review`}>{reviewCount}</span>}
             </button>
           ))}
@@ -99,6 +101,7 @@ export default function App() {
           </div>
           <div className={`content ${s.syncing ? 'dim' : ''}`}>
             {page === 'dashboard' && <Dashboard go={setPage} />}
+            {page === 'prep' && <Prep go={setPage} />}
             {page === 'bodyweight' && <Bodyweight />}
             {page === 'strength' && <Strength go={setPage} />}
             {page === 'endurance' && <Endurance go={setPage} />}
@@ -124,7 +127,7 @@ function Banners({ onGo }: { onGo: (p: Page) => void }) {
           <span className="status-icon warn">!</span>
           <span className="grow">
             {s.auth === 'expired'
-              ? 'Your Google sign-in expired (normal about once a week while the app is in Testing mode). Showing cached data.'
+              ? 'Your Google sign-in expired. Showing cached data. (If this keeps happening weekly, the Google consent screen is still in Testing mode.)'
               : 'Not connected to Google. Showing cached data.'}
           </span>
           <button className="btn primary small" onClick={reconnect} disabled={busy}>{busy ? 'Waiting for browser…' : 'Reconnect Google'}</button>

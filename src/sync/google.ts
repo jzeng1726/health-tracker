@@ -104,7 +104,7 @@ export async function createSheetInFolder(b: Backend, name: string, folderId: st
   return { id: f.id, firstTabId: meta.sheets[0].properties.sheetId };
 }
 
-export const TRAINING_LOG_HEADERS = ['Date', 'Exercise', 'Weight (lb)', 'Sets', 'Reps', 'Time', 'Distance', 'Notes', 'Logged from'];
+export const TRAINING_LOG_HEADERS = ['Date', 'Exercise', 'Weight (lb)', 'Sets', 'Reps', 'Time', 'Distance', 'Notes', 'Logged from', 'Gym', 'RPE'];
 
 export async function createTrainingLog(b: Backend, folderId: string): Promise<string> {
   const { id, firstTabId } = await createSheetInFolder(b, 'Training Log', folderId);
@@ -114,7 +114,7 @@ export async function createTrainingLog(b: Backend, folderId: string): Promise<s
     { repeatCell: { range: { sheetId: firstTabId, startColumnIndex: 5, endColumnIndex: 7 }, cell: { userEnteredFormat: { numberFormat: { type: 'TEXT' } } }, fields: 'userEnteredFormat.numberFormat' } },
     { repeatCell: { range: { sheetId: firstTabId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: 'userEnteredFormat.textFormat.bold' } },
   ]);
-  await valuesUpdate(b, id, `${quoteTab('Log')}!A1:I1`, [TRAINING_LOG_HEADERS]);
+  await valuesUpdate(b, id, `${quoteTab('Log')}!A1:K1`, [TRAINING_LOG_HEADERS]);
   return id;
 }
 

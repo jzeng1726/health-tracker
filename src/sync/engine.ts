@@ -12,12 +12,13 @@ import {
 } from './google';
 import type { SheetFile, Dataset } from '../core/model';
 import {
-  type AppConfig, type ConfigRow, defaultConfig, configFromRows, configToRows, mergeConfigs, applySeed, CONFIG_KEYS,
+  type AppConfig, type ConfigRow, defaultConfig, configFromRows, configToRows, mergeConfigs, applySeed, migrateConfig, CONFIG_KEYS,
+  DEFAULT_SETTINGS, DEFAULT_GYMS,
 } from '../core/config';
 import { SEED_CONFIG } from '../core/seedConfig';
 import { buildDataset } from '../core/ingest';
 import { classifyTab, headerMappingForRow, cellNumber } from '../core/classify';
-import { cellDate, colName } from '../core/grid';
+import { cellDate, colName, cellText } from '../core/grid';
 
 export type AuthState = 'unknown' | 'connected' | 'disconnected' | 'expired';
 export interface SyncState {
@@ -40,7 +41,7 @@ export interface SyncState {
   backendKind: 'tauri' | 'mock';
 }
 
-const EMPTY_DATASET: Dataset = { bodyweight: [], sets: [], endurance: [], exercises: {}, review: [], files: [], autoMappings: {} };
+const EMPTY_DATASET: Dataset = { bodyweight: [], sets: [], endurance: [], exercises: {}, review: [], files: [], autoMappings: {}, programs: [], gyms: ['Home gym'] };
 
 let state: SyncState = {
   ready: false, syncing: false, auth: 'unknown', lastSynced: null, error: null, folder: null, folderChoices: null,
@@ -81,7 +82,9 @@ export async function init() {
     backend.appVersion().catch(() => ''),
   ]);
   const files = (await Promise.all((index ?? []).map(id => cacheJSON<SheetFile>(K.file(id))))).filter((f): f is SheetFile => !!f);
-  const config = local?.config ? { ...defaultConfig(), ...local.config } : defaultConfig();
+  const config = local?.config
+    ? { ...defaultConfig(), ...local.config, settings: { ...DEFAULT_SETTINGS, ...local.config.settings }, gyms: { ...DEFAULT_GYMS, ...local.config.gyms } }
+    : defaultConfig();
   pendingConfigPush = !!local?.pending;
   set({
     ready: true, backendKind: backend.kind, device, version, files, config, stamps: local?.stamps ?? {},
@@ -205,7 +208,9 @@ async function syncConfig(cfgItem: DriveItem | undefined, folderId: string) {
   const remoteRows = await readRemoteConfig(configFileId);
   const remote = configFromRows(remoteRows);
   const merged = mergeConfigs(state.config, pendingConfigPush ? state.stamps : {}, remote.config, remote.stamps);
-  const seeded = applySeed(merged.config, merged.stamps, SEED_CONFIG);
+  const seededRaw = applySeed(merged.config, merged.stamps, SEED_CONFIG);
+  const migrated = migrateConfig(seededRaw.config);
+  const seeded = { config: migrated.config, seeded: [...new Set([...seededRaw.seeded, ...migrated.changed])] };
   const now = new Date().toISOString();
   const stamps = { ...merged.stamps };
   for (const k of seeded.seeded) stamps[k] = now;
@@ -312,7 +317,7 @@ export async function logBodyweight(dateISO: string, weight: number, fileId?: st
 
 export interface WorkoutEntry {
   date: string; exercise: string; weight?: number | null; sets?: number | null; reps?: number | null;
-  timeText?: string; distanceText?: string; notes?: string;
+  timeText?: string; distanceText?: string; notes?: string; gym?: string; rpe?: number | null;
 }
 
 export async function logWorkout(entry: WorkoutEntry, fileId?: string): Promise<{ where: string }> {
@@ -323,10 +328,32 @@ export async function logWorkout(entry: WorkoutEntry, fileId?: string): Promise<
     await setConfigKey('settings', { ...state.config.settings, quickEntryWorkoutFile: target });
   }
   const file = state.files.find(f => f.id === target);
-  const tabTitle = file?.tabs.find(t => classifyTab(t, file.name).kind === 'workout-log')?.title ?? 'Log';
-  const row = [mdY(entry.date), entry.exercise, entry.weight ?? '', entry.sets ?? '', entry.reps ?? '', entry.timeText ?? '', entry.distanceText ?? '', entry.notes ?? '', state.device];
-  // RAW: "1:30" is stored as the text 1:30 (read back as 1 min 30 s), never as a clock time
-  await valuesAppend(backend, target, `${quoteTab(tabTitle)}!A:I`, [row], 'RAW');
+  const tab = file?.tabs.find(t => classifyTab(t, file.name, state.config.columnMappings[`${file.id}:${t.title}`]).kind === 'workout-log');
+  const tabTitle = tab?.title ?? 'Log';
+  const mapping = tab && file ? classifyTab(tab, file.name, state.config.columnMappings[`${file.id}:${tab.title}`]).mapping : undefined;
+  const isAppLog = !mapping || (cellText(tab?.rows[0]?.[8]) === 'Logged from');
+  if (isAppLog) {
+    // the app's own Training Log: logs made before v0.1.4 have no Gym / RPE columns yet — add the two headers once
+    const head = (await valuesGet(backend, target, `${quoteTab(tabTitle)}!A1:K1`))[0] ?? [];
+    if ((head[9] ?? '').trim().toLowerCase() !== 'gym' || (head[10] ?? '').trim().toLowerCase() !== 'rpe') {
+      await valuesUpdate(backend, target, `${quoteTab(tabTitle)}!J1:K1`, [['Gym', 'RPE']], 'RAW');
+    }
+    const row = [mdY(entry.date), entry.exercise, entry.weight ?? '', entry.sets ?? '', entry.reps ?? '', entry.timeText ?? '', entry.distanceText ?? '', entry.notes ?? '', state.device, entry.gym ?? '', entry.rpe ?? ''];
+    // RAW: "1:30" is stored as the text 1:30 (read back as 1 min 30 s), never as a clock time
+    await valuesAppend(backend, target, `${quoteTab(tabTitle)}!A:K`, [row], 'RAW');
+  } else {
+    // someone else's layout (e.g. the Vacation tracker): write each value under its own header
+    const C = mapping!.columns;
+    const vals: Partial<Record<string, string | number>> = {
+      date: mdY(entry.date), exercise: entry.exercise, weight: entry.weight ?? '', sets: entry.sets ?? '', reps: entry.reps ?? '',
+      time: entry.timeText ?? '', distance: entry.distanceText ?? '', notes: entry.notes ?? '', gym: entry.gym ?? '', rpe: entry.rpe ?? '',
+      setsxreps: entry.sets && entry.reps ? `${entry.sets}x${entry.reps}` : '',
+    };
+    const width = Math.max(...Object.values(C).filter((x): x is number => x != null)) + 1;
+    const row: (string | number)[] = Array(width).fill('');
+    for (const [role, col] of Object.entries(C)) if (col != null && vals[role] != null) row[col] = vals[role]!;
+    await valuesAppend(backend, target, `${quoteTab(tabTitle)}!A:${colName(width - 1)}`, [row], 'RAW');
+  }
   await sync();
   return { where: `${file?.name ?? 'Training Log'} › ${tabTitle}` };
 }

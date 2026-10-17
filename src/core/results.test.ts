@@ -39,3 +39,26 @@ describe('parseResult — every format seen in Jeffrey\'s sheets', () => {
   it('bodyweight 1x8 -> 1 set x 8', () => expect(sets('1x8', { bodyweight: true })).toEqual([{ weight: null, reps: 8, seconds: null }]));
   it('free text note only', () => expect(parseResult('Cldve done more but grip gave out').empty).toBe(true));
 });
+
+describe('v0.1.4 cells', () => {
+  it('numbered sets in one cell all count', () => {
+    expect(parseResult('1. 150x7 2. 130x13 3. 130x12').sets.map(x => [x.weight, x.reps])).toEqual([[150, 7], [130, 13], [130, 12]]);
+    expect(parseResult('135x10, 155x8').sets.map(x => [x.weight, x.reps])).toEqual([[135, 10], [155, 8]]);
+  });
+  it('rep lists still work', () => expect(parseResult('150x15,10,8').sets.map(x => x.reps)).toEqual([15, 10, 8]));
+  it('"L-90x13 R-90x": flags the missing side and suggests copying the reps', () => {
+    const r = parseResult('L-90x13 R-90x');
+    expect(r.sets).toHaveLength(1);
+    expect(r.incompleteSide).toEqual({ side: 'R', weight: 90 });
+    expect(r.suggestion).toBe('L-90x13 R-90x13');
+  });
+  it('reads RPE written in the cell', () => {
+    expect(parseResult('140x9 @9')).toMatchObject({ rpe: 9, sets: [{ weight: 140, reps: 9 }] });
+    expect(parseResult('140x9 rpe 8.5').rpe).toBe(8.5);
+  });
+  it('a weightless extra set in a note is still flagged, not counted', () => {
+    const r = parseResult('345x5, switched to other way and x8');
+    expect(r.sets).toHaveLength(1);
+    expect(r.flags.join()).toMatch(/not counted/);
+  });
+});

@@ -23,6 +23,9 @@ export function headerRole(text: string, rowHasExercise: boolean): { role: Colum
   const t = text.trim().toLowerCase();
   if (!t) return null;
   if (/sets?\s*[x×\/]\s*reps?/.test(t)) return { role: 'setsxreps' };
+  if (/^(muscle|muscles|muscle group|muscle groups|body ?part|target( muscle)?|group)\b/.test(t)) return { role: 'muscle' };
+  if (/^(gym|location|place|where|facility)\b/.test(t)) return { role: 'gym' };
+  if (/^(rpe|rir|effort|intensity|reps in reserve)\b/.test(t)) return { role: 'rpe', unit: /rir|reserve/.test(t) ? 'rir' : 'rpe' };
   if (IGNORE_RX.test(t) && !/^date/.test(t)) return { role: 'ignore' };
   if (/^(date|day|when)\b/.test(t)) return { role: 'date' };
   if (/^(exercise|movement|lift|activity|workout|exercise name)\b/.test(t)) return { role: 'exercise' };
@@ -57,6 +60,7 @@ export function headerMappingForRow(row: SheetCell[]): Omit<ColumnMapping, 'head
   const columns: Partial<Record<ColumnRole, number>> = {};
   let timeUnit: ColumnMapping['timeUnit'];
   let distanceUnit: ColumnMapping['distanceUnit'];
+  let rpeUnit: ColumnMapping['rpeUnit'];
   let found = 0;
   texts.forEach((t, c) => {
     const role = headerRole(t, hasExercise);
@@ -66,10 +70,11 @@ export function headerMappingForRow(row: SheetCell[]): Omit<ColumnMapping, 'head
       found++;
       if (role.role === 'time' && role.unit) timeUnit = role.unit as any;
       if (role.role === 'distance' && role.unit) distanceUnit = role.unit as any;
+      if (role.role === 'rpe' && role.unit) rpeUnit = role.unit as any;
     }
   });
   if (found < 2) return null;
-  if (columns.exercise != null && columns.date != null) return { type: 'workout', columns, timeUnit, distanceUnit };
+  if (columns.exercise != null && columns.date != null) return { type: 'workout', columns, timeUnit, distanceUnit, ...(rpeUnit ? { rpeUnit } : {}) };
   if (columns.exercise == null && columns.date != null && columns.bodyweight != null) return { type: 'bodyweight', columns };
   return null;
 }

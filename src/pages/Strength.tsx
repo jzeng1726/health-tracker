@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react';
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList } from 'recharts';
 import type { Page } from '../App';
-import { useSync, useRange, pct, fmt, shortDate, longDate, Empty, Section, TimeChart, TipBox, axisProps, inRange, todayISO } from '../ui/common';
-import { sessionsByExercise, muscleScores, weeklySets, strengthPRs, exerciseProgress, mondayOf, type SessionBest } from '../core/strength';
+import { useSync, useRange, pct, fmt, shortDate, Empty, Section, TimeChart, inRange, todayISO } from '../ui/common';
+import {
+  sessionsByExercise, muscleScores, weeklySets, strengthPRs, exerciseProgress, gymFactors, unifiedSessions, relativeSeries,
+  findPlateaus, nextTarget, bodyweightOn, stationKey, mainGym, type SessionBest, type GymFactor, type Plateau,
+} from '../core/strength';
 import { MUSCLES, type Muscle } from '../core/muscles';
-import { toDay } from '../core/bodyweight';
+import { toDay, movingAverage, type MAPoint } from '../core/bodyweight';
+import { VolumeHeatmap } from '../ui/Heatmap';
 
 type Sel = Muscle | 'Overall';
 
@@ -14,28 +17,38 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
   const ds = s.dataset;
   const [sel, setSel] = useState<Sel>('Overall');
   const [openEx, setOpenEx] = useState<string | null>(null);
-  const [week, setWeek] = useState<string | null>(null);
 
+  const defGym = s.config.gyms.defaultGym || 'Home gym';
   const d = useMemo(() => {
     const byEx = sessionsByExercise(ds.sets);
+    const factors = gymFactors(byEx, s.config.gyms.factorOverrides, defGym);
+    const ma = movingAverage(ds.bodyweight);
     const scores = muscleScores(byEx, ds.exercises, bounds.start, bounds.end ?? undefined);
-    const weeks = weeklySets(ds.sets, ds.endurance, ds.exercises, s.config.settings.enduranceCountsTowardVolume, bounds.start);
+    const weeks = weeklySets(ds.sets, ds.endurance, ds.exercises, s.config.settings.enduranceCountsTowardVolume, null);
     const prs = strengthPRs(byEx).filter(p => inRange(p.date, bounds));
-    const rows = [...byEx.entries()].map(([ex, list]) => ({ ex, info: ds.exercises[ex], prog: exerciseProgress(list, bounds.start, bounds.end ?? undefined), all: list }))
-      .filter(r => r.info && r.info.kind === 'strength');
-    return { byEx, scores, weeks, prs, rows };
-  }, [ds, bounds, s.config.settings.enduranceCountsTowardVolume]);
+    const plateaus = findPlateaus(byEx, todayISO());
+    // one row per exercise per gym — each gym's machine is its own scale
+    const rows = [...byEx.entries()].flatMap(([ex, list]) => {
+      const info = ds.exercises[ex];
+      if (!info || info.kind !== 'strength') return [];
+      const gyms = [...new Set(list.map(x => x.gym))];
+      return gyms.map(g => {
+        const st = list.filter(x => x.gym === g);
+        const prog = exerciseProgress(st, bounds.start, bounds.end ?? undefined);
+        const bw = prog.latest?.e1rm != null ? bodyweightOn(ma, prog.latest.date) : null;
+        return { key: stationKey(ex, g), ex, gym: g, multiGym: gyms.length > 1, info, prog, all: list, rel: bw ? prog.latest!.e1rm! / bw : null, plateau: plateaus.find(p => p.exercise === ex && p.gym === g) ?? null };
+      });
+    });
+    return { byEx, factors, ma, scores, weeks, prs, rows, plateaus };
+  }, [ds, bounds, s.config.settings.enduranceCountsTowardVolume, s.config.gyms, defGym]);
 
   if (!ds.sets.length) return <Empty title="No strength sets found">Workout sheets in the folder are detected automatically.</Empty>;
 
   const series = d.scores.series[sel];
   const rows = d.rows
+    .filter(r => r.prog.latest != null || r.all.some(x => x.gym === r.gym && inRange(x.date, bounds)))
     .filter(r => sel === 'Overall' || r.info.primary === sel || r.info.secondary.includes(sel))
     .sort((a, b) => (b.prog.latest?.date ?? '').localeCompare(a.prog.latest?.date ?? '') || a.info.display.localeCompare(b.info.display));
-  const weekKeys = d.weeks.map(w => w.week);
-  const curWeek = week && weekKeys.includes(week) ? week : weekKeys.includes(mondayOf(todayISO())) ? mondayOf(todayISO()) : weekKeys.at(-1) ?? null;
-  const weekRow = d.weeks.find(w => w.week === curWeek);
-  const weekBars = MUSCLES.map(m => ({ muscle: m, sets: (weekRow as any)?.[m] ?? 0 }));
   const lowReview = ds.review.filter(r => r.kind === 'exercise' || r.kind === 'merge').length;
 
   return (
@@ -74,59 +87,48 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
       <Section title="Exercises" sub={sel === 'Overall' ? 'all' : `mapped to ${sel}`} right={lowReview ? <button className="btn small" onClick={() => go('review')}>Review exercises ({lowReview})</button> : <button className="btn small" onClick={() => go('review')}>Exercise map</button>} />
       <div className="card table-wrap">
         <table>
-          <thead><tr><th>Exercise</th><th>Muscles</th><th className="n">Sessions</th><th>Latest best set</th><th className="n">Est. 1RM</th><th className="n">% change</th><th className="n">Last volume</th></tr></thead>
+          <thead><tr><th>Exercise</th><th>Muscles</th><th className="n">Sessions</th><th>Latest best set</th><th className="n">Est. 1RM</th><th className="n" title="estimated 1RM ÷ 7-day average bodyweight">× BW</th><th className="n">% change</th><th className="n">Last volume</th></tr></thead>
           <tbody>
             {rows.map(r => {
               const l = r.prog.latest;
               return [
-                <tr key={r.ex} className={`clickable ${openEx === r.ex ? 'sel' : ''}`} onClick={() => setOpenEx(openEx === r.ex ? null : r.ex)}>
-                  <td>{r.info.display}{r.info.confidence === 'low' || r.info.confidence === 'none' ? <> <span className="pill low">unconfirmed</span></> : null}</td>
+                <tr key={r.key} className={`clickable ${openEx === r.key ? 'sel' : ''}`} onClick={() => setOpenEx(openEx === r.key ? null : r.key)}>
+                  <td>{r.info.display}
+                    {(r.multiGym || r.gym !== defGym) && <> <span className="pill gym">{r.gym}</span></>}
+                    {r.info.confidence === 'low' || r.info.confidence === 'none' ? <> <span className="pill low">unconfirmed</span></> : null}
+                    {r.plateau && <> <span className="pill warn" title={`no new best in ${r.plateau.sessions} sessions`}>plateau</span></>}
+                  </td>
                   <td className="hint">{r.info.primary}{r.info.secondary.length ? ` + ${r.info.secondary.join(', ')} (½)` : ''}</td>
                   <td className="n">{r.prog.sessions.length}</td>
                   <td>{l ? <>{l.weight ?? 'BW'} × {l.reps} <span className="hint">{shortDate(l.date)}</span>{l.isPR && <> <span className="pill pr">PR</span></>}</> : '—'}</td>
                   <td className="n">{l?.e1rm != null ? fmt(l.e1rm) : '—'}</td>
+                  <td className="n">{r.rel != null ? `${r.rel.toFixed(2)}×` : '—'}</td>
                   <td className="n">{r.prog.pct == null ? '—' : <span className={r.prog.pct > 0 ? 'delta-good' : r.prog.pct < 0 ? 'delta-bad' : ''}>{pct(r.prog.pct)}</span>}</td>
                   <td className="n">{l ? l.volume.toLocaleString() : '—'}</td>
                 </tr>,
-                openEx === r.ex && <tr key={r.ex + '-d'}><td colSpan={7}><ExerciseDetail sessions={r.all.filter(x => inRange(x.date, bounds))} name={r.info.display} /></td></tr>,
+                openEx === r.key && <tr key={r.key + '-d'}><td colSpan={8}><ExerciseDetail all={r.all} gym={r.gym} bounds={bounds} name={r.info.display} factors={d.factors} ma={d.ma} defGym={defGym} plateau={r.plateau} /></td></tr>,
               ];
             })}
           </tbody>
         </table>
         {!rows.length && <div className="hint" style={{ padding: 10 }}>No exercises mapped to {sel} yet.</div>}
+        <div className="hint" style={{ marginTop: 8 }}>× BW = estimated 1RM ÷ your 7-day average bodyweight that day. During a cut, a rising × BW means you're keeping strength while losing weight.</div>
       </div>
 
       <div className="grid two" style={{ marginTop: 14 }}>
         <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <div><h2>Weekly sets per muscle</h2><div className="sub">primary = 1 set, secondary = ½{s.config.settings.enduranceCountsTowardVolume ? ' · endurance included' : ''}</div></div>
-            <select value={curWeek ?? ''} onChange={e => setWeek(e.target.value)} style={{ width: 'auto' }} aria-label="Week">
-              {[...weekKeys].reverse().map(w => <option key={w} value={w}>Week of {shortDate(w)}</option>)}
-            </select>
-          </div>
-          <div style={{ height: 260 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={weekBars} layout="vertical" margin={{ top: 4, right: 36, bottom: 0, left: 8 }} barCategoryGap={6}>
-                <CartesianGrid stroke="var(--grid)" horizontal={false} />
-                <XAxis type="number" {...axisProps} allowDecimals={false} domain={[0, (max: number) => Math.max(2, Math.ceil(max))]} />
-                <YAxis type="category" dataKey="muscle" {...axisProps} width={80} axisLine={false} />
-                <Tooltip cursor={{ fill: 'var(--surface-2)' }} isAnimationActive={false} content={({ active, payload }) => active && payload?.length
-                  ? <TipBox title={`Week of ${longDate(curWeek!)}`} rows={[{ label: `${payload[0].payload.muscle} sets`, value: String(payload[0].payload.sets), color: 'var(--series-1)' }]} /> : null} />
-                <Bar dataKey="sets" fill="var(--series-1)" radius={[0, 4, 4, 0]} maxBarSize={18} isAnimationActive={false}>
-                  <LabelList dataKey="sets" position="right" fill="var(--ink-2)" fontSize={11} formatter={(v: number) => (v ? v : '')} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <h2>Weekly sets per muscle</h2>
+          <div className="sub">last 8 weeks · primary = 1 set, secondary = ½ · target {s.config.settings.weeklySetsMin}–{s.config.settings.weeklySetsMax} (change in Settings){s.config.settings.enduranceCountsTowardVolume ? ' · endurance included' : ''}</div>
+          <VolumeHeatmap weeks={d.weeks} min={s.config.settings.weeklySetsMin} max={s.config.settings.weeklySetsMax} />
         </div>
         <div className="card table-wrap">
           <h2>PR tracker</h2>
-          <div className="sub">new best estimated 1RM or heaviest weight, in range</div>
+          <div className="sub">new best estimated 1RM or heaviest weight at that gym, in range</div>
           {d.prs.length ? (
             <table>
               <thead><tr><th>Date</th><th>Exercise</th><th>Type</th><th className="n">Value</th><th>Set</th></tr></thead>
               <tbody>{d.prs.slice(0, 25).map((p, i) => (
-                <tr key={i}><td>{shortDate(p.date)}</td><td>{ds.exercises[p.exercise]?.display ?? p.exercise}</td><td><span className="pill pr">{p.kind}</span></td><td className="n">{p.value}</td><td className="hint">{p.detail}</td></tr>
+                <tr key={i}><td>{shortDate(p.date)}</td><td>{ds.exercises[p.exercise]?.display ?? p.exercise}{p.gym && p.gym !== defGym && <> <span className="pill gym">{p.gym}</span></>}</td><td><span className="pill pr">{p.kind}</span></td><td className="n">{p.value}</td><td className="hint">{p.detail}</td></tr>
               ))}</tbody>
             </table>
           ) : <div className="hint">No PRs in this range yet.</div>}
@@ -136,26 +138,47 @@ export default function Strength({ go }: { go: (p: Page) => void }) {
   );
 }
 
-function ExerciseDetail({ sessions, name }: { sessions: SessionBest[]; name: string }) {
-  const withE = sessions.filter(x => x.e1rm != null);
+function ExerciseDetail({ all, gym, bounds, name, factors, ma, defGym, plateau }: {
+  all: SessionBest[]; gym: string; bounds: { start: string | null; end: string | null }; name: string;
+  factors: Map<string, GymFactor>; ma: MAPoint[]; defGym: string; plateau: Plateau | null;
+}) {
+  const gyms = [...new Set(all.map(x => x.gym))];
+  const main = mainGym(all, defGym);
+  const unified = unifiedSessions(all, factors, defGym).filter(x => inRange(x.date, bounds));
+  const rel = relativeSeries(all, factors, ma, defGym).filter(x => inRange(x.date, bounds));
+  const here = all.filter(x => x.gym === gym);
+  const sessions = here.filter(x => inRange(x.date, bounds));
+  const last = here.filter(x => x.e1rm != null).at(-1);
+  const target = last ? nextTarget(last) : null;
+  const facts = gyms.filter(g => g !== main).map(g => factors.get(stationKey(all[0].exercise, g))).filter(Boolean) as GymFactor[];
   return (
     <div style={{ padding: '6px 0 10px' }}>
+      {(target || plateau) && (
+        <div className="callout">
+          {target && <>Next time at {gym}: <b>{target.text}</b> <span className="hint">({target.why}; PR = {target.prText})</span></>}
+          {plateau && <div className="hint">Plateau: no new best in {plateau.sessions} sessions. Try one extra rep, a slower negative, or a 10% lighter week, then build back.</div>}
+        </div>
+      )}
       <div className="grid two">
         <div>
-          <h3>{name} · estimated 1RM (best set per session)</h3>
-          <TimeChart data={withE.map(x => ({ day: toDay(x.date), y: x.e1rm!, set: `${x.weight} × ${x.reps}` }))} yFmt={v => `${Math.round(v)}`} tipLabel="lb est. 1RM" height={200} tipExtra={p => `best set ${p.set}`} />
+          <h3>{name} · est. 1RM{gyms.length > 1 ? ` on the ${main} scale` : ''}</h3>
+          {gyms.length > 1 && <div className="hint">Open dots = sessions at another gym, converted. {facts.map(f => `${f.gym}: ${f.factor != null ? `×${f.factor.toFixed(2)} — ${f.detail}` : f.detail}`).join(' · ')}</div>}
+          <TimeChart data={unified.map(x => ({ day: toDay(x.date), y: x.e1rmMain, set: `${x.weight} × ${x.reps}`, gym: x.gym, conv: x.converted, f: x.factor }))} yFmt={v => `${Math.round(v)}`} tipLabel="lb est. 1RM" height={200} hollowKey="conv"
+            tipExtra={p => p.conv ? `${p.gym}: ${p.set} × ${p.f.toFixed(2)} = ${Math.round(p.y)} on the ${main} scale` : `best set ${p.set}${gyms.length > 1 ? ` · ${p.gym}` : ''}`} />
         </div>
         <div>
-          <h3>Volume per session (sets × reps × weight)</h3>
-          <TimeChart data={sessions.map(x => ({ day: toDay(x.date), y: x.volume }))} yFmt={v => v.toLocaleString()} tipLabel="lb volume" height={200} />
+          <h3>Strength-to-bodyweight · est. 1RM ÷ 7-day avg weight</h3>
+          <TimeChart data={rel.map(x => ({ day: toDay(x.date), y: x.ratio, bw: x.bw, e: x.e1rm, conv: x.converted }))} yFmt={v => `${v.toFixed(2)}×`} tipLabel="× bodyweight" height={200} hollowKey="conv"
+            tipExtra={p => `${Math.round(p.e)} lb ÷ ${p.bw.toFixed(1)} lb`} />
         </div>
       </div>
       <table style={{ marginTop: 8 }}>
-        <thead><tr><th>Date</th><th>Best set</th><th className="n">Est. 1RM</th><th className="n">Sets</th><th className="n">Volume</th><th>Source cell</th></tr></thead>
-        <tbody>{[...sessions].reverse().map(x => (
-          <tr key={x.date}><td>{shortDate(x.date)}</td><td>{x.weight ?? 'BW'} × {x.reps} {x.isPR && <span className="pill pr">PR</span>}</td><td className="n">{x.e1rm != null ? fmt(x.e1rm) : '—'}</td><td className="n">{x.sets}</td><td className="n">{x.volume.toLocaleString()}</td><td className="hint">{x.ref}</td></tr>
+        <thead><tr><th>Date</th>{gyms.length > 1 && <th>Gym</th>}<th>Best set</th><th className="n">Est. 1RM</th><th className="n">Sets</th><th className="n">Volume</th><th>Source cell</th></tr></thead>
+        <tbody>{[...all.filter(x => inRange(x.date, bounds))].reverse().map(x => (
+          <tr key={x.date + x.gym} className={x.gym !== gym ? 'other' : ''}><td>{shortDate(x.date)}</td>{gyms.length > 1 && <td>{x.gym}</td>}<td>{x.weight ?? 'BW'} × {x.reps}{x.rpe != null ? ` @${x.rpe}` : ''} {x.isPR && <span className="pill pr">PR</span>}</td><td className="n">{x.e1rm != null ? fmt(x.e1rm) : '—'}</td><td className="n">{x.sets}</td><td className="n">{x.volume.toLocaleString()}</td><td className="hint">{x.ref}</td></tr>
         ))}</tbody>
       </table>
+      {!sessions.length && <div className="hint">No sessions at {gym} in this range.</div>}
     </div>
   );
 }

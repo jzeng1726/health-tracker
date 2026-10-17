@@ -14,9 +14,9 @@ const fx = (f: string) => (HAVE ? JSON.parse(readFileSync(`fixtures/${f}`, 'utf8
 const asFile = (j: any, modifiedTime: string): SheetFile => ({ id: j.id, name: j.title, modifiedTime, tabs: [{ title: j.tab, rows: j.rows }] });
 
 const files: SheetFile[] = [
-  asFile(fx('fall-cut-2026.json'), '2026-09-24T14:25:57Z'),
+  asFile(fx('fall-cut-2026.json'), '2026-10-08T16:48:51Z'),
   asFile(fx('fb-week-01.json'), '2026-08-27T21:53:07Z'),
-  asFile(fx('fb-weeks-2-4.json'), '2026-09-24T01:17:02Z'),
+  asFile(fx('fb-weeks-2-4.json'), '2026-10-07T02:45:17Z'),
 ];
 const config: AppConfig = applySeed(defaultConfig(), {}, SEED_CONFIG).config;
 const ds = buildDataset(files, config);
@@ -41,10 +41,10 @@ describe('classification by headers, not names', () => {
 
 describe.skipIf(!HAVE)('bodyweight (Fall Cut 2026) — hand-checked against the sheet', () => {
   const ma = movingAverage(ds.bodyweight);
-  it('reads 33 weigh-ins 8/23 → 9/24 and ignores blank future dates', () => {
-    expect(ds.bodyweight).toHaveLength(33);
+  it('reads 44 weigh-ins 8/23 → 10/8 and ignores blank days and future dates', () => {
+    expect(ds.bodyweight).toHaveLength(44);
     expect(ds.bodyweight[0]).toMatchObject({ date: '2026-08-23', weight: 169 });
-    expect(ds.bodyweight.at(-1)).toMatchObject({ date: '2026-09-24', weight: 160.2 });
+    expect(ds.bodyweight.at(-1)).toMatchObject({ date: '2026-10-08', weight: 161.2 });
   });
   it('first 6 days are partial averages', () => {
     expect(ma.slice(0, 6).every(p => p.partial)).toBe(true);
@@ -52,19 +52,21 @@ describe.skipIf(!HAVE)('bodyweight (Fall Cut 2026) — hand-checked against the 
     expect(ma[1].ma).toBeCloseTo((169 + 168.9) / 2, 6);
   });
   it('7-day MA on 9/24 = (161.6+162.8+163.4+164+161.7+161.1+160.2)/7 = 162.114', () => {
-    expect(ma.at(-1)!.ma).toBeCloseTo(1134.8 / 7, 6);
+    expect(ma.find(p => p.date === '2026-09-24')!.ma).toBeCloseTo(1134.8 / 7, 6);
   });
   it('7-day MA on 8/29 = 1178.6/7 = 168.371', () => {
     expect(ma.find(p => p.date === '2026-08-29')!.ma).toBeCloseTo(1178.6 / 7, 6);
   });
-  it('stats from the MA', () => {
+  it('stats from the MA (latest window 10/2–10/8 has only 4 weigh-ins)', () => {
     const s = bodyweightStats(ma, null, 155);
+    const last = (162.1 + 161.2 + 163.1 + 161.2) / 4; // 10/2, 10/3, 10/6, 10/8
     expect(s.start).toBe(169);
-    expect(s.totalLost).toBeCloseTo(169 - 1134.8 / 7, 6);
-    expect(s.pctLost).toBeCloseTo((169 - 1134.8 / 7) / 169, 6);
-    // MA 9/17 = (163.9+163+162.4+163.5+163.2+163.7+163.3)/7 = 1143/7
-    expect(s.weeklyRate).toBeCloseTo(1143 / 7 - 1134.8 / 7, 6);
-    expect(s.projectedDate).not.toBeNull();
+    expect(s.current).toBeCloseTo(last, 6);
+    expect(s.currentN).toBe(4);
+    expect(s.totalLost).toBeCloseTo(169 - last, 6);
+    expect(s.pctLost).toBeCloseTo((169 - last) / 169, 6);
+    // MA 10/1 = (160.8+161+162+163.3+160.2+160.8+161.9)/7 = 1130/7 — the average went UP that week
+    expect(s.weeklyRate).toBeCloseTo(1130 / 7 - last, 6);
   });
   it('Mon–Sun weekly averages', () => {
     const w = weeklyAverages(ds.bodyweight);
@@ -79,10 +81,10 @@ describe.skipIf(!HAVE)('strength — merges, corrections, e1RM', () => {
   it('merges Seated Dip Machine into Machine Dips (mandatory Chest rule)', () => {
     expect(ds.exercises['seated dip machine']).toBeUndefined();
     const dips = byEx.get('machine dip')!;
-    expect(dips.map(s => s.date)).toEqual(['2026-08-25', '2026-08-27', '2026-08-30', '2026-09-03', '2026-09-12', '2026-09-22']);
+    expect(dips.map(s => s.date)).toEqual(['2026-08-25', '2026-08-27', '2026-08-30', '2026-09-03', '2026-09-12', '2026-09-22', '2026-09-29', '2026-10-02']);
     expect(dips[0].e1rm).toBeCloseTo(195 * (1 + 10 / 30), 6); // 195x10-12 -> lower bound 10
     const p = exerciseProgress(dips, null);
-    expect(p.pct).toBeCloseTo((210 * (1 + 13 / 30)) / (195 * (1 + 10 / 30)) - 1, 6);
+    expect(p.pct).toBeCloseTo((225 * (1 + 10 / 30)) / (195 * (1 + 10 / 30)) - 1, 6);
   });
   it('applies the 13x9 -> 130x9 correction', () => {
     const v = byEx.get('v bar lat pulldown')!.find(s => s.date === '2026-08-30')!;
@@ -92,9 +94,10 @@ describe.skipIf(!HAVE)('strength — merges, corrections, e1RM', () => {
   it('"c" merged into Kneeling Band Tri Ext (no logged data, no review item)', () => {
     expect(ds.review.find(r => r.title === 'c')).toBeUndefined();
   });
-  it('Recline Curl confirmed Biceps; Clavicular Press still awaits review', () => {
+  it('Recline Curl confirmed Biceps; Clavicular Press now recognised as Chest (no question)', () => {
     expect(ds.exercises['recline curl'].confidence).toBe('confirmed');
-    expect(ds.review.find(r => r.kind === 'exercise' && r.exercise === 'clavicular press')).toBeDefined();
+    expect(ds.exercises['clavicular press']).toMatchObject({ primary: 'Chest', confidence: 'high' });
+    expect(ds.review.filter(r => r.kind === 'exercise')).toHaveLength(0);
   });
   it('no leftover merge suggestions for approved pairs', () => {
     expect(ds.review.filter(r => r.kind === 'merge')).toHaveLength(0);
@@ -127,20 +130,49 @@ describe.skipIf(!HAVE)('endurance — X:YY is minutes:seconds', () => {
     const h = sessions.find(s => s.type === 'static_hold')!;
     expect(h).toMatchObject({ date: '2026-09-23', weight: 80, seconds: 197, longestSeconds: 104 });
   });
-  it('Plank "2:00" (stored as 2 AM) is undated -> review, not charted', () => {
-    const r = ds.review.find(x => x.kind === 'undated' && x.raw === '2:00');
-    expect(r).toBeDefined();
+  const undated = () => ds.review.find(x => x.kind === 'undated' && /Plank "2:00"/.test(x.raw ?? ''));
+  it('Plank "2:00" (stored as 2 AM) is undated -> one review item for the whole core block, not charted', () => {
+    expect(undated()).toBeDefined();
+    expect(undated()!.keys).toHaveLength(4);
     expect(ds.endurance.find(e => e.raw === '2:00')).toBeUndefined();
   });
-  it('Plank once dated -> 120 s', () => {
+  it('Plank once dated -> 120 s (one date applies to every entry of the block)', () => {
     const cfg = structuredClone(config);
-    cfg.dateAssignments[r0()] = '2026-09-05';
+    for (const k of undated()!.keys!) cfg.dateAssignments[k] = '2026-09-24';
     const d2 = buildDataset(files, cfg);
     expect(d2.endurance.find(e => e.raw === '2:00')!.seconds).toBe(120);
-    function r0() { return ds.review.find(x => x.kind === 'undated' && x.raw === '2:00')!.key!; }
+    expect(d2.review.find(x => x.kind === 'undated')).toBeUndefined();
   });
   it('walking lunges: 45x10 each = 20 steps', () => {
     const l = sessions.find(s => s.type === 'walking_lunge' && s.date === '2026-09-01')!;
     expect(l.steps).toBe(20);
+  });
+});
+
+const HAVE_NEW = existsSync('fixtures/fb-weeks-5-7.json') && existsSync('fixtures/vacation.json');
+describe.skipIf(!HAVE_NEW)('v0.1.4 — Weeks 5-7 + Vacation tracker (real sheets, 10/17)', () => {
+  const all = [...files, asFile(fx('fb-weeks-5-7.json'), '2026-10-11T16:20:12Z'), asFile(fx('vacation.json'), '2026-10-17T03:43:06Z')];
+  const d = buildDataset(all, config);
+  it('Weeks 5-7 is its own program, not a duplicate of Weeks 2-4 (same template, different results)', () => {
+    expect(d.files.map(f => f.tabs[0].kind)).toEqual(['bodyweight', 'program-grid', 'program-grid', 'program-grid', 'workout-log']);
+  });
+  it('"1 Higher pad position" is a note on 45° back extensions, not an exercise', () => {
+    expect(d.exercises['1 higher pad position']).toBeUndefined();
+    const b = d.programs.find(p => p.fileName.includes('5,6,7'))!.blocks[0];
+    expect(b.items.find(i => i.exercise === '45 degree back extension')!.notes).toEqual(['1 Higher pad position']);
+  });
+  it('"L-90x13 R-90x" -> review with a one-click fix', () => {
+    expect(d.review.find(r => r.kind === 'value' && r.raw === 'L-90x13 R-90x')!.suggestion).toBe('L-90x13 R-90x13');
+  });
+  it('vacation sets land at "Vacation gym" and read every name without asking', () => {
+    const vac = d.sets.filter(s => s.gym === 'Vacation gym');
+    expect(vac).toHaveLength(29);
+    expect(d.review.filter(r => r.kind === 'exercise')).toHaveLength(0);
+    expect(d.exercises['triceps supported curl'].primary).toBe('Biceps');
+    expect(d.exercises['wide grip lat pulldown machine'].primary).toBe('Back');
+  });
+  it('word-order twins merge on their own ("Chest press machine" = "Machine Chest Press")', () => {
+    expect(d.exercises['chest press machine']).toBeUndefined();
+    expect(d.sets.filter(s => s.exercise === 'machine chest press' && s.gym === 'Vacation gym')).toHaveLength(2);
   });
 });

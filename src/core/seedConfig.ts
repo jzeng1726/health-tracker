@@ -3,7 +3,7 @@
  * Written to the _config sheet on first run; after that _config is the source of truth.
  * Keys use normalized exercise names (see normalizeExerciseName).
  */
-import type { AppConfig } from './config';
+import { DEFAULT_SETTINGS, type AppConfig } from './config';
 
 export const SEED_CONFIG: Partial<AppConfig> = {
   goals: { goalWeightLb: 155 },
@@ -25,6 +25,7 @@ export const SEED_CONFIG: Partial<AppConfig> = {
     { sheetIdHash: '73077d87', cell: 'L12', from: '8.26', to: '8:26', note: 'approved: 8 min 26 s mile on 8/27' },
   ],
   settings: {
+    ...DEFAULT_SETTINGS,
     refreshMinutes: 5,
     distanceUnitRun: 'mi',
     distanceUnitCarry: 'm',

@@ -112,8 +112,8 @@ function UndatedReview({ item }: { item: ReviewItem }) {
       <div><div className="t">{item.title}</div><div className="d">{item.detail}</div><div className="hint">{item.ref}</div></div>
       <div className="actions">
         <input type="date" value={d} onChange={e => setD(e.target.value)} style={{ width: 150 }} aria-label="Date done" />
-        <button className="btn primary small" onClick={() => setConfigKey('dateAssignments', { ...s.config.dateAssignments, [item.key!]: d })}>Save date</button>
-        <button className="btn small" onClick={() => setConfigKey('ignored', [...s.config.ignored, item.key!, item.id])}>Ignore entry</button>
+        <button className="btn primary small" onClick={() => setConfigKey('dateAssignments', { ...s.config.dateAssignments, ...Object.fromEntries((item.keys ?? [item.key!]).map(k => [k, d])) })}>{(item.keys?.length ?? 1) > 1 ? `Save date for all ${item.keys!.length}` : 'Save date'}</button>
+        <button className="btn small" onClick={() => setConfigKey('ignored', [...s.config.ignored, ...(item.keys ?? [item.key!]), item.id])}>Ignore {(item.keys?.length ?? 1) > 1 ? 'all' : 'entry'}</button>
       </div>
     </div>
   );
@@ -140,8 +140,8 @@ function ValueReview({ item }: { item: ReviewItem }) {
   );
 }
 
-const ROLES: ColumnRole[] = ['ignore', 'date', 'exercise', 'bodyweight', 'weight', 'sets', 'reps', 'setsxreps', 'time', 'distance', 'notes'];
-const ROLE_LABEL: Record<ColumnRole, string> = { ignore: '—', date: 'Date', exercise: 'Exercise', bodyweight: 'Bodyweight', weight: 'Load (lb)', sets: 'Sets', reps: 'Reps', setsxreps: 'Sets×Reps (3x8)', time: 'Time', distance: 'Distance', notes: 'Notes' };
+const ROLES: ColumnRole[] = ['ignore', 'date', 'exercise', 'bodyweight', 'weight', 'sets', 'reps', 'setsxreps', 'time', 'distance', 'notes', 'muscle', 'gym', 'rpe'];
+const ROLE_LABEL: Record<ColumnRole, string> = { ignore: '—', date: 'Date', exercise: 'Exercise', bodyweight: 'Bodyweight', weight: 'Load (lb)', sets: 'Sets', reps: 'Reps', setsxreps: 'Sets×Reps (3x8)', time: 'Time', distance: 'Distance', notes: 'Notes', muscle: 'Muscle group', gym: 'Gym', rpe: 'RPE' };
 
 function SheetMapper({ item }: { item: ReviewItem }) {
   const s = useSync();

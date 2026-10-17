@@ -25,6 +25,12 @@ export interface ParsedResult {
   flags: string[];
   /** true if nothing numeric could be extracted */
   empty: boolean;
+  /** "R-90x": one side written without reps */
+  incompleteSide?: { side: 'L' | 'R'; weight: number };
+  /** corrected text the app can offer with one click */
+  suggestion?: string;
+  /** RPE written in the cell ("140x9 @9", "RPE 8.5") */
+  rpe?: number;
 }
 
 const NUM = String.raw`\d+(?:\.\d+)?`;
@@ -52,7 +58,7 @@ function parseValue(v: string): ValueParse {
 }
 
 // weight x value, where value = time | list | range | number
-const VALUE = String.raw`(\d+:\d{2}(?:\s*m(?:in)?)?|${NUM}(?:\s*,\s*${NUM})+|${NUM}\s*-\s*${NUM}|${NUM})`;
+const VALUE = String.raw`(\d+:\d{2}(?:\s*m(?:in)?)?|${NUM}(?:\s*,\s*${NUM}(?![\d.]|\s*x))+|${NUM}\s*-\s*${NUM}|${NUM})`;
 const WX = new RegExp(String.raw`(?:(${NUM})\s*)?x\s*${VALUE}`, 'i');
 
 export function parseResult(rawIn: string, opts: { bodyweight?: boolean } = {}): ParsedResult {
@@ -66,6 +72,8 @@ export function parseResult(rawIn: string, opts: { bodyweight?: boolean } = {}):
   }
 
   let rest = raw;
+  const rpeM = raw.match(/(?:@\s*|\brpe\s*:?\s*)(\d{1,2}(?:\.5)?)\b/i);
+  if (rpeM && Number(rpeM[1]) >= 5 && Number(rpeM[1]) <= 10) { res.rpe = Number(rpeM[1]); rest = rest.replace(rpeM[0], ' '); }
   const push = (weight: number | null, vp: ValueParse, extra: Partial<ParsedSet> = {}) => {
     res.flags.push(...vp.flags);
     if (vp.seconds != null || (vp.reps.length === 0 && vp.flags.length)) {
@@ -80,7 +88,7 @@ export function parseResult(rawIn: string, opts: { bodyweight?: boolean } = {}):
   const rounds = [...raw.matchAll(roundRe)];
   if (rounds.length) {
     for (const m of rounds) push(Number(m[2]), parseValue(m[3]), { round: Number(m[1]) });
-    rest = raw.replace(roundRe, ' ');
+    rest = rest.replace(roundRe, ' ');
   } else {
     // ---- sides: "L-40x20 R-40x20", "L 40x17 R40x17", "50 Lx20 Rx20"
     const sideRe = new RegExp(String.raw`(?<![A-Za-z])([LR])(?![a-wyz])\s*-?\s*(${NUM})?\s*x\s*${VALUE}`, 'g');
@@ -91,25 +99,43 @@ export function parseResult(rawIn: string, opts: { bodyweight?: boolean } = {}):
         const w = m[2] != null ? Number(m[2]) : lead ? Number(lead[1]) : null;
         push(w, parseValue(m[3]), { side: m[1] as 'L' | 'R' });
       }
-      rest = raw.replace(sideRe, ' ').replace(lead ? new RegExp(`^${lead[1]}`) : /^$/, ' ');
+      rest = rest.replace(sideRe, ' ').replace(lead ? new RegExp(`^${lead[1]}`) : /^$/, ' ');
     } else {
-      const m = raw.match(WX);
-      if (m) {
-        const vp = parseValue(m[2]);
-        let weight = m[1] != null ? Number(m[1]) : null;
-        if (opts.bodyweight && weight != null && weight <= 5 && vp.seconds == null && vp.reps.length === 1) {
-          // "1x8" on a bodyweight move = 1 set x 8 reps
-          const sets = weight;
-          res.flags.push(`bodyweight move: read "${m[0]}" as ${sets} set(s) × ${vp.reps[0]} reps`);
-          for (let i = 0; i < sets; i++) res.sets.push({ weight: null, reps: vp.reps[0], seconds: null });
-        } else {
-          push(weight, vp);
+      const all = [...raw.matchAll(new RegExp(WX.source, 'gi'))];
+      const loaded = all.filter(x => x[1] != null);
+      if (loaded.length > 1 && !opts.bodyweight) {
+        // several sets in one cell: "1. 150x7 2. 130x13 3. 130x12", "135x10, 155x8"
+        for (const x of loaded) push(Number(x[1]), parseValue(x[2]));
+        for (const x of loaded) rest = rest.replace(x[0], ' ');
+        rest = rest.replace(/(^|\s)\d{1,2}[.)]\s*(?=\s|$)/g, ' ');
+      } else {
+        const m = all[0];
+        if (m) {
+          const vp = parseValue(m[2]);
+          let weight = m[1] != null ? Number(m[1]) : null;
+          if (opts.bodyweight && weight != null && weight <= 5 && vp.seconds == null && vp.reps.length === 1) {
+            // "1x8" on a bodyweight move = 1 set x 8 reps
+            const sets = weight;
+            res.flags.push(`bodyweight move: read "${m[0]}" as ${sets} set(s) × ${vp.reps[0]} reps`);
+            for (let i = 0; i < sets; i++) res.sets.push({ weight: null, reps: vp.reps[0], seconds: null });
+          } else {
+            push(weight, vp);
+          }
+          rest = rest.replace(m[0], ' ');
         }
-        rest = raw.replace(m[0], ' ');
       }
     }
   }
 
+  // "L-90x13 R-90x": a side with a weight but no reps
+  const half = rest.match(/(?<![A-Za-z])([LR])\s*-?\s*(\d+(?:\.\d+)?)\s*x(?!\s*\d)/);
+  if (half && res.sets.length) {
+    const other = res.sets.find(x => x.side && x.side !== half[1]);
+    res.incompleteSide = { side: half[1] as 'L' | 'R', weight: Number(half[2]) };
+    res.flags.push(`${half[1]} side has ${half[2]} lb but no reps — counted ${other ? `the ${other.side} side` : 'the rest'} only`);
+    if (other?.reps != null) res.suggestion = raw.replace(half[0], `${half[0]}${other.reps}`);
+    rest = rest.replace(half[0], ' ');
+  }
   const note = rest.replace(/^[\s,;.\-]+|[\s,;.\-]+$/g, '').replace(/\s+/g, ' ');
   if (note) {
     res.note = note;
