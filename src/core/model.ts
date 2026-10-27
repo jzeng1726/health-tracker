@@ -13,7 +13,7 @@ export interface SheetFile {
   tabs: SheetTab[];
 }
 
-export type TabKind = 'bodyweight' | 'program-grid' | 'workout-log' | 'life-log' | 'derived' | 'empty' | 'config' | 'duplicate' | 'unknown';
+export type TabKind = 'bodyweight' | 'program-grid' | 'workout-log' | 'life-log' | 'derived' | 'exercise-list' | 'empty' | 'config' | 'duplicate' | 'unknown';
 
 export interface BodyweightEntry { date: string; weight: number; fileId: string; ref: string }
 

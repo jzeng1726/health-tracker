@@ -12,7 +12,7 @@ import type {
 } from './model';
 import { readNote, readLifeNote } from './notes';
 import { cleanExerciseName } from './names';
-import { classifyTab, headerMappingForRow, cellNumber } from './classify';
+import { classifyTab, headerMappingForRow, cellNumber, detectExerciseList } from './classify';
 import { parseGrid, cellText, cellDate, colName, isProgramGrid, type GridEntry } from './grid';
 import { detectMuscles, normalizeExerciseName, suggestMerges, withSheetMuscle, wordSetKey, type MuscleMapping } from './muscles';
 import { parseEntryResult, type ParsedSet } from './results';
@@ -181,6 +181,21 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
     });
   };
 
+  // Exercise library tabs (muscle-group columns with exercise names underneath) tag exercises with
+  // their muscle group before any sets are read, so the Log tab's rows get the right muscle.
+  for (const file of files) {
+    if (duplicates.has(file.id)) continue;
+    for (const tab of file.tabs) {
+      if (classifyTab(tab, file.name, config.columnMappings[`${file.id}:${tab.title}`]).kind !== 'exercise-list') continue;
+      for (const e of detectExerciseList(tab.rows)?.entries ?? []) {
+        const norm = normalizeExerciseName(e.exercise);
+        if (!norm) continue;
+        const canonical = resolveCanonical(norm, config.merges);
+        if (!sheetMuscle.has(canonical)) sheetMuscle.set(canonical, e.group);
+      }
+    }
+  }
+
   for (const file of files) {
     const summary: FileSummary = { id: file.id, name: file.name, modifiedTime: file.modifiedTime, viaShortcut: file.viaShortcut, owner: file.owner, tabs: [] };
     fileSummaries.push(summary);
@@ -202,6 +217,8 @@ export function buildDataset(files: SheetFile[], config: AppConfig): Dataset {
       const year = Number((file.modifiedTime || new Date().toISOString()).slice(0, 4));
       const refOf = (r: number, c: number) => `${file.name} › ${tab.title}!${a1(r, c)}${corrected.has(a1(r, c)) ? ' (corrected)' : ''}`;
       const keyOf = (r: number, c: number) => `${file.id}!${tab.title}!${a1(r, c)}`;
+
+      if (cls.kind === 'exercise-list') continue; // read in the pass above; nothing is logged from it
 
       if (cls.kind === 'unknown') {
         addReview({ id: `sheet:${mapKey}`, kind: 'sheet', title: `${file.name} › ${tab.title}`, detail: cls.reason, fileId: file.id, tab: tab.title });

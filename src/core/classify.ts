@@ -114,7 +114,63 @@ export function classifyTab(tab: SheetTab, fileName: string, override?: ColumnMa
       mapping,
     };
   }
+  const list = detectExerciseList(tab.rows);
+  if (list) {
+    return { kind: 'exercise-list', reason: `exercise library — ${list.groups.length} muscle-group columns on row ${list.headerRow + 1}; used to tag exercises with their muscle group, nothing is logged from it` };
+  }
   return { kind: 'unknown', reason: 'no recognisable header row — map its columns in Review' };
+}
+
+// ------------------------------------------------------------------ exercise library tabs
+
+/** Words that can make up a muscle-group column heading ("Glutes / Hips", "Rear Delts", "Upper Back"). */
+const MUSCLE_WORDS = new Set([
+  'chest', 'pec', 'pecs', 'back', 'lat', 'lats', 'trap', 'traps', 'shoulder', 'shoulders', 'delt', 'delts',
+  'bicep', 'biceps', 'tricep', 'triceps', 'arm', 'arms', 'forearm', 'forearms', 'quad', 'quads', 'hamstring', 'hamstrings',
+  'glute', 'glutes', 'hip', 'hips', 'calf', 'calves', 'leg', 'legs', 'core', 'ab', 'abs', 'oblique', 'obliques',
+  'upper', 'lower', 'rear', 'front', 'side', 'mid', 'middle', 'and',
+]);
+const MUSCLE_CORE = new Set([...MUSCLE_WORDS].filter(w => !['upper', 'lower', 'rear', 'front', 'side', 'mid', 'middle', 'and'].includes(w)));
+
+export function isMuscleHeading(text: string): boolean {
+  const words = text.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  return words.length > 0 && words.length <= 4 && words.every(w => MUSCLE_WORDS.has(w)) && words.some(w => MUSCLE_CORE.has(w));
+}
+
+export interface ExerciseList {
+  headerRow: number;
+  groups: { col: number; label: string }[];
+  /** exercise name -> the muscle-group heading it sits under */
+  entries: { exercise: string; group: string; row: number; col: number }[];
+}
+
+/**
+ * An exercise library: a row of muscle-group headings (Chest | Back | Shoulders | …) with exercise
+ * names listed underneath, no dates and no numbers. Often the source of a Log tab's dropdown.
+ */
+export function detectExerciseList(rows: SheetCell[][], limit = 40): ExerciseList | null {
+  for (let r = 0; r < Math.min(rows.length, limit); r++) {
+    const cells = (rows[r] ?? []).map(c => cellText(c).trim());
+    const filled = cells.filter(Boolean);
+    const groups = cells.map((label, col) => ({ col, label })).filter(g => g.label && isMuscleHeading(g.label));
+    if (groups.length < 3 || groups.length < filled.length * 0.6) continue;
+    const entries: ExerciseList['entries'] = [];
+    let dated = 0, numeric = 0;
+    for (let rr = r + 1; rr < rows.length; rr++) {
+      const row = rows[rr] ?? [];
+      if (row.some(c => cellDate(c, 2026))) dated++;
+      for (const g of groups) {
+        const c = row[g.col];
+        const t = cellText(c).trim();
+        if (!t) continue;
+        if (typeof c?.n === 'number' || /^-?\d+(\.\d+)?$/.test(t)) { numeric++; continue; }
+        if (isMuscleHeading(t)) continue;
+        entries.push({ exercise: t, group: g.label, row: rr, col: g.col });
+      }
+    }
+    if (entries.length >= 3 && dated === 0 && numeric <= entries.length * 0.1) return { headerRow: r, groups, entries };
+  }
+  return null;
 }
 
 /** Read a numeric value from a cell (number, or text like "160.2" / "160.2 lb"). */
