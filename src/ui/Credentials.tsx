@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { credentialsInfo, saveClientCredentials, clearClientCredentials } from '../sync/engine';
 import type { CredentialsInfo } from '../sync/backend';
 
-/** Lets Jeffrey paste the downloaded Google OAuth JSON; stored in the OS keychain, overrides the built-in one. */
+/** Lets Jeffrey paste the downloaded Google OAuth JSON; stored on this computer (private file on Mac, Credential Manager on Windows), overrides the built-in one. */
 export function CredentialsPanel({ startOpen = false }: { startOpen?: boolean }) {
   const [open, setOpen] = useState(startOpen);
   const [info, setInfo] = useState<CredentialsInfo | null>(null);
@@ -14,7 +14,7 @@ export function CredentialsPanel({ startOpen = false }: { startOpen?: boolean })
     try {
       const i = await saveClientCredentials(text);
       setInfo(i); setText('');
-      setMsg({ ok: true, text: 'Saved to your keychain. Now click Connect Google.' });
+      setMsg({ ok: true, text: 'Saved on this computer. Now click Connect Google.' });
     } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
   };
   const reset = async () => { setInfo(await clearClientCredentials()); setMsg({ ok: true, text: 'Removed — using the built-in credentials.' }); };

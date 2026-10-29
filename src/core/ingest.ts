@@ -54,7 +54,15 @@ function applyCorrections(file: SheetFile, tab: SheetTab, config: AppConfig, orp
 export function gymForFile(file: { id: string; name: string }, config: AppConfig): string {
   const g = config.gyms ?? { defaultGym: 'Training Station', bySheet: {} as Record<string, string> };
   const set = g.bySheet?.[file.id];
-  return set ? normalizeGym(set, config) : (/\b(vacation|travel|trip|hotel|away|visiting)\b/i.test(file.name) ? 'Vacation gym' : g.defaultGym || 'Home gym');
+  if (set) return normalizeGym(set, config);
+  // a sheet named after a gym you've added ("Firehouse Gym", "Firehouse log") belongs to that gym
+  const name = ` ${file.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  const named = [...(g.names ?? []), g.defaultGym].filter(Boolean).find(k => {
+    const core = k.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\bgym\b/g, '').trim();
+    return core.length >= 3 && name.includes(` ${core} `);
+  });
+  if (named) return named;
+  return /\b(vacation|travel|trip|hotel|away|visiting)\b/i.test(file.name) ? 'Vacation gym' : g.defaultGym || 'Home gym';
 }
 
 /** "home gym" -> "Training Station" after a rename; "firehouse" -> "Firehouse Gym"; otherwise as typed. */

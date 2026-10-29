@@ -22,7 +22,7 @@ export default function Settings({ theme, setTheme, go }: { theme: string; setTh
       <div className="card" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <span className={`status-icon ${s.auth === 'connected' ? 'ok' : 'warn'}`}>{s.auth === 'connected' ? '✓' : '!'}</span>
         <span style={{ flex: 1 }}>{s.auth === 'connected' ? <>Connected{ s.email ? <> as <b>{s.email}</b></> : null}</> : s.auth === 'expired' ? 'Sign-in expired' : 'Not connected'}
-          <div className="hint">Token stored in the {navigator.platform.toLowerCase().includes('win') ? 'Windows Credential Manager' : 'macOS Keychain'}. If Google asks you to sign in again every week, the consent screen is still in Testing — publish it ("In production") in Google Cloud to stop that.</div></span>
+          <div className="hint">Token stored {navigator.platform.toLowerCase().includes('win') ? 'in the Windows Credential Manager' : 'in a private file only your Mac account can read (no Keychain password prompts after updates)'}. If Google asks you to sign in again every week, the consent screen is still in Testing — publish it ("In production") in Google Cloud to stop that.</div></span>
         <button className="btn primary" onClick={() => connect().catch(() => {})}>Reconnect Google</button>
         {s.auth === 'connected' && <button className="btn" onClick={() => disconnect()}>Disconnect</button>}
         <div style={{ flexBasis: '100%' }}><CredentialsPanel /></div>

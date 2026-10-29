@@ -35,7 +35,7 @@ Project `Health Tracker` → Sheets API + Drive API enabled → OAuth consent sc
 | `TAURI_SIGNING_PRIVATE_KEY` | Contents of the updater private key file (signs updates so the app only installs builds from you) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The key's password (leave the secret empty if it has none) |
 
-> A desktop app's client secret isn't truly confidential (Google says so for installed apps). It's kept out of the code anyway. Your sign-in token never leaves your computer's keychain.
+> A desktop app's client secret isn't truly confidential (Google says so for installed apps). It's kept out of the code anyway. Your sign-in token never leaves your computer (a private owner-only file on Mac, Credential Manager on Windows).
 
 ---
 
@@ -54,7 +54,7 @@ Builds run in GitHub Actions (**Actions → Build installers → Run workflow**)
      xattr -dr com.apple.quarantine "/Applications/Health Tracker.app"
      ```
 4. You only need to do this once. Later updates install without the warning.
-5. After an update, macOS may ask once whether **Health Tracker** can use your saved **Google token** in the keychain. Click **Always Allow**. (Unsigned apps get a new code identity with each version.)
+5. Since v0.1.7 the Mac app keeps its Google sign-in in a private file in its app data folder instead of the Keychain, so updates no longer ask for your Mac password. The first launch of v0.1.7 asks one last time while it copies the old Keychain items over; click **Always Allow**.
 
 ### Windows 11
 1. Download `Health.Tracker_x.y.z_x64_en-US.msi` (or `…_x64-setup.exe`).
@@ -181,7 +181,7 @@ The same lift on a different gym's machine is a different scale (gym B's lat pul
 
 ## 7. Reconnect Google
 
-While the app's OAuth consent screen is in **Testing** mode, Google expires the sign-in about **every 7 days**. To stop that: Google Cloud Console → *Google Auth Platform* → *Audience* → **Publish app** → Confirm, then Settings → Reconnect Google once. When that happens you'll see a yellow banner: *"Your Google sign-in expired… Showing cached data."* Click **Reconnect Google**, sign in again in the browser, and you're done. Nothing is lost and charts never go blank. The token is stored only in the macOS Keychain / Windows Credential Manager (Settings → Disconnect removes it).
+While the app's OAuth consent screen is in **Testing** mode, Google expires the sign-in about **every 7 days**. To stop that: Google Cloud Console → *Google Auth Platform* → *Audience* → **Publish app** → Confirm, then Settings → Reconnect Google once. When that happens you'll see a yellow banner: *"Your Google sign-in expired… Showing cached data."* Click **Reconnect Google**, sign in again in the browser, and you're done. Nothing is lost and charts never go blank. The token is stored only on your computer: a private file on Mac, Windows Credential Manager on Windows (Settings → Disconnect removes it).
 
 ---
 
@@ -201,4 +201,4 @@ npm run dev       # browser preview with a mock Google backend (dev only, uses f
 npm run tauri dev # the real desktop app (needs GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in your env)
 ```
 
-Layout: `src/core` (pure logic: time parsing, muscle detection, grid parsing, ingestion, metrics) · `src/sync` (Google API, sync engine, cache) · `src/pages` (tabs) · `src-tauri` (Rust: OAuth PKCE, keychain, SQLite cache, updater).
+Layout: `src/core` (pure logic: time parsing, muscle detection, grid parsing, ingestion, metrics) · `src/sync` (Google API, sync engine, cache) · `src/pages` (tabs) · `src-tauri` (Rust: OAuth PKCE, secret store, SQLite cache, updater).

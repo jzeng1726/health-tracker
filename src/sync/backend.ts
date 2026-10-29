@@ -1,6 +1,6 @@
 /**
  * Platform bridge. In the desktop app every Google call goes through the Rust
- * side (tokens never reach JavaScript; they live in the OS keychain).
+ * side (tokens never reach JavaScript; they stay in the Rust side: a private file on Mac, Credential Manager on Windows).
  */
 export type ApiErrorCode = 'AUTH_REQUIRED' | 'AUTH_EXPIRED' | 'OFFLINE' | 'HTTP' | 'CONFIG' | 'UNKNOWN';
 export class ApiError extends Error {

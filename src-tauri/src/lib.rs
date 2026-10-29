@@ -2,8 +2,9 @@
 //!
 //! Security model
 //! - Google OAuth 2.0 installed-app flow with PKCE and a 127.0.0.1 loopback redirect.
-//! - The refresh token lives only in the OS credential store (macOS Keychain /
-//!   Windows Credential Manager). The access token lives only in memory here.
+//! - The refresh token lives in a private owner-only file on macOS (see secrets.rs: the
+//!   unsigned app made Keychain ask for a password after every update) and in Windows
+//!   Credential Manager on Windows. The access token lives only in memory here.
 //! - JavaScript never sees a token: it asks `google_request` to call a Google
 //!   API URL, and that command refuses any host other than Google's API hosts.
 //! - Local cache = SQLite file in the app data folder (sheet snapshots + settings).
@@ -18,12 +19,13 @@ use tauri::{Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod secrets;
+
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 /// Minimum scopes: list the folder (Drive read-only), create only the app's own
 /// two files (drive.file), read/write sheets for Quick Entry.
 const SCOPES: &str = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets";
-const KEYRING_SERVICE: &str = "com.jeffreyzeng.healthtracker";
 const KEY_REFRESH: &str = "google-refresh-token";
 const KEY_EMAIL: &str = "google-account-email";
 const KEY_CLIENT_ID: &str = "google-oauth-client-id";
@@ -70,12 +72,8 @@ fn fingerprint(s: &str) -> String {
     format!("{} characters, ending \u{2026}{}", s.chars().count(), tail)
 }
 
-fn keyring_entry(name: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, name).map_err(|e| format!("UNKNOWN: credential store unavailable: {e}"))
-}
-
 fn read_secret(name: &str) -> Option<String> {
-    keyring_entry(name).ok()?.get_password().ok()
+    secrets::get(name)
 }
 
 fn random_string(len: usize) -> String {
@@ -113,8 +111,8 @@ fn auth_status() -> AuthStatus {
 #[tauri::command]
 async fn auth_disconnect(state: State<'_, AppState>) -> Result<(), String> {
     *state.token.lock().await = None;
-    if let Ok(e) = keyring_entry(KEY_REFRESH) { let _ = e.delete_credential(); }
-    if let Ok(e) = keyring_entry(KEY_EMAIL) { let _ = e.delete_credential(); }
+    secrets::delete(KEY_REFRESH);
+    secrets::delete(KEY_EMAIL);
     Ok(())
 }
 
@@ -200,7 +198,7 @@ async fn auth_connect(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
     }
     let tok: TokenResponse = resp.json().await.map_err(|e| format!("UNKNOWN: {e}"))?;
     let refresh = tok.refresh_token.ok_or("AUTH_REQUIRED: Google did not return a refresh token — try Reconnect again")?;
-    keyring_entry(KEY_REFRESH)?.set_password(&refresh).map_err(|e| format!("UNKNOWN: could not save to the credential store: {e}"))?;
+    secrets::set(KEY_REFRESH, &refresh)?;
     *state.token.lock().await = Some(AccessToken {
         token: tok.access_token.clone(),
         expires_at: Instant::now() + Duration::from_secs(tok.expires_in.unwrap_or(3600)),
@@ -218,7 +216,7 @@ async fn auth_connect(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
         Some(r) => r.json::<serde_json::Value>().await.ok().and_then(|v| v["user"]["emailAddress"].as_str().map(String::from)),
         None => None,
     };
-    if let (Some(e), Ok(k)) = (&email, keyring_entry(KEY_EMAIL)) { let _ = k.set_password(e); }
+    if let Some(e) = &email { let _ = secrets::set(KEY_EMAIL, e); }
     Ok(AuthStatus { connected: true, email })
 }
 
@@ -286,16 +284,16 @@ async fn set_client_credentials(state: State<'_, AppState>, json: String) -> Res
     if !id.ends_with(".apps.googleusercontent.com") || secret.is_empty() {
         return Err("CONFIG: The JSON needs both client_id (ending in .apps.googleusercontent.com) and client_secret.".into());
     }
-    keyring_entry(KEY_CLIENT_ID)?.set_password(&id).map_err(|e| format!("UNKNOWN: {e}"))?;
-    keyring_entry(KEY_CLIENT_SECRET)?.set_password(&secret).map_err(|e| format!("UNKNOWN: {e}"))?;
+    secrets::set(KEY_CLIENT_ID, &id)?;
+    secrets::set(KEY_CLIENT_SECRET, &secret)?;
     *state.token.lock().await = None;
     Ok(credentials_info())
 }
 
 #[tauri::command]
 fn clear_client_credentials() -> CredentialsInfo {
-    if let Ok(e) = keyring_entry(KEY_CLIENT_ID) { let _ = e.delete_credential(); }
-    if let Ok(e) = keyring_entry(KEY_CLIENT_SECRET) { let _ = e.delete_credential(); }
+    secrets::delete(KEY_CLIENT_ID);
+    secrets::delete(KEY_CLIENT_SECRET);
     credentials_info()
 }
 
@@ -389,6 +387,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_data_dir() {
+                secrets::init(&dir, &[KEY_REFRESH, KEY_EMAIL, KEY_CLIENT_ID, KEY_CLIENT_SECRET]);
+            }
             let db = open_db(app.handle());
             app.manage(AppState {
                 http: reqwest::Client::builder().user_agent("HealthTracker/desktop").build().expect("http client"),

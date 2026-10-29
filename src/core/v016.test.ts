@@ -64,3 +64,18 @@ describe('exercise library tab', () => {
     expect(detectExerciseList(notList.map(r => r.map(c)))).toBeNull();
   });
 });
+
+describe('sheet named after a gym', () => {
+  it('Firehouse Gym sheet counts for Firehouse Gym without picking it in Settings', async () => {
+    const { gymForFile } = await import('./ingest');
+    const cfg = defaultConfig();
+    expect(gymForFile({ id: 'a', name: 'Firehouse Gym' }, cfg)).toBe('Firehouse Gym');
+    expect(gymForFile({ id: 'b', name: 'firehouse log 2026' }, cfg)).toBe('Firehouse Gym');
+    expect(gymForFile({ id: 'c', name: 'Push Pull Legs' }, cfg)).toBe('Training Station');
+    expect(gymForFile({ id: 'd', name: 'Hotel workouts' }, cfg)).toBe('Vacation gym');
+    cfg.gyms.bySheet.a = 'Training Station';
+    expect(gymForFile({ id: 'a', name: 'Firehouse Gym' }, cfg)).toBe('Training Station'); // your pick in Settings wins
+    const ds = buildDataset([file('fh', 'Firehouse Gym', [['Log', log], ['Exercises', exercises]])], defaultConfig());
+    expect(new Set(ds.sets.map(s => s.gym))).toEqual(new Set(['Firehouse Gym']));
+  });
+});
